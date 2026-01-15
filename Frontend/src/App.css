@@ -1,0 +1,263 @@
+/* Layout */
+.app-shell {
+	min-height: 100vh;
+	width: 100%;
+	display: flex;
+	justify-content: center;
+	padding: 48px 16px 64px;
+}
+
+.page {
+	width: min(1100px, 100%);
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+}
+
+.hero {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+}
+
+.hero h1 {
+	margin: 6px 0;
+	font-size: 32px;
+}
+
+.eyebrow {
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	font-size: 12px;
+	color: #9aa5c3;
+}
+
+.muted {
+	color: #9aa5c3;
+	margin: 6px 0;
+}
+
+.status-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border: 1px solid rgba(255,255,255,0.12);
+	border-radius: 12px;
+	background: rgba(255,255,255,0.04);
+	color: #d8e1ff;
+}
+
+.dot {
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	display: inline-block;
+}
+
+.dot-green { background: #22c55e; }
+.dot-red { background: #ef4444; }
+.dot-amber { background: #f59e0b; }
+
+.card {
+	background: rgba(255,255,255,0.04);
+	border: 1px solid rgba(255,255,255,0.08);
+	border-radius: 16px;
+	padding: 18px;
+	box-shadow: 0 12px 40px rgba(0,0,0,0.35);
+}
+
+.card-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.timestamp {
+	font-size: 13px;
+	color: #9aa5c3;
+}
+
+.pill {
+	display: inline-flex;
+	align-items: center;
+	padding: 4px 10px;
+	border-radius: 999px;
+	background: rgba(99,102,241,0.18);
+	color: #cbd1ff;
+	font-weight: 600;
+	font-size: 12px;
+	border: 1px solid rgba(99,102,241,0.4);
+}
+
+.pill-ghost {
+	background: rgba(255,255,255,0.06);
+	border-color: rgba(255,255,255,0.08);
+	color: #c3c9e6;
+}
+
+.form {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.field label {
+	font-weight: 600;
+	color: #d8e1ff;
+}
+
+.field input {
+	background: rgba(0,0,0,0.2);
+	border: 1px solid rgba(255,255,255,0.12);
+	border-radius: 12px;
+	padding: 12px;
+	color: #e6ecf5;
+	font-size: 15px;
+	transition: border 0.15s ease, box-shadow 0.15s ease;
+}
+
+.field input:focus {
+	outline: none;
+	border-color: rgba(99,102,241,0.6);
+	box-shadow: 0 0 0 3px rgba(99,102,241,0.2);
+}
+
+.actions {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+button {
+	background: linear-gradient(120deg, #6366f1, #22c55e);
+	border: none;
+	color: #0b1021;
+	padding: 12px 18px;
+	border-radius: 12px;
+	font-weight: 700;
+	cursor: pointer;
+	transition: transform 0.1s ease, filter 0.1s ease;
+}
+
+button:disabled {
+	filter: grayscale(0.4);
+	cursor: not-allowed;
+}
+
+button:not(:disabled):active {
+	transform: translateY(1px);
+}
+
+.error {
+	background: rgba(239,68,68,0.12);
+	color: #fecaca;
+	border: 1px solid rgba(239,68,68,0.4);
+	padding: 10px 12px;
+	border-radius: 12px;
+}
+
+.progress {
+	position: relative;
+	background: rgba(255,255,255,0.06);
+	border-radius: 999px;
+	overflow: hidden;
+	border: 1px solid rgba(255,255,255,0.08);
+	height: 14px;
+}
+
+.progress-bar {
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(90deg, #22c55e, #6366f1);
+	transition: width 0.25s ease;
+}
+
+.progress-label {
+	margin-top: 6px;
+	color: #cbd1ff;
+	font-size: 13px;
+}
+
+.grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 16px;
+}
+
+.stack {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.bullets {
+	padding-left: 18px;
+	color: #d8e1ff;
+}
+
+.frames-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+	gap: 10px;
+	margin-top: 10px;
+}
+
+.frame-thumb {
+	display: block;
+	padding: 10px;
+	border-radius: 12px;
+	background: rgba(255,255,255,0.03);
+	border: 1px solid rgba(255,255,255,0.06);
+	transition: border 0.15s ease, transform 0.15s ease;
+}
+
+.frame-thumb:hover {
+	border-color: rgba(99,102,241,0.5);
+	transform: translateY(-1px);
+}
+
+.frame-meta {
+	display: flex;
+	justify-content: space-between;
+	color: #cbd1ff;
+	font-size: 13px;
+}
+
+.frame-desc {
+	margin-top: 8px;
+	color: #e6ecf5;
+	font-weight: 600;
+	font-size: 14px;
+}
+
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.chip {
+	padding: 6px 10px;
+	border-radius: 999px;
+	background: rgba(255,255,255,0.06);
+	border: 1px solid rgba(255,255,255,0.1);
+	color: #cbd1ff;
+	font-size: 13px;
+}
+
+@media (max-width: 720px) {
+	.app-shell { padding: 28px 12px 48px; }
+	.hero { flex-direction: column; align-items: flex-start; }
+	.actions { flex-direction: column; align-items: flex-start; }
+}

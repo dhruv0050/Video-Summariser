@@ -1,0 +1,369 @@
+import os
+import asyncio
+from datetime import datetime
+from typing import Dict, Any
+from bson import ObjectId
+
+from models.database import db
+from models.video_job import VideoJob, TranscriptSegment, Topic, Frame
+from services.drive_service import drive_service
+from services.gemini_service import gemini_service
+from utils.ffmpeg_utils import FFmpegUtils
+import config
+
+
+class ProcessingPipeline:
+    """Orchestrates the video processing pipeline"""
+    
+    def __init__(self):
+        self.ffmpeg = FFmpegUtils()
+    
+    async def process_video(self, job_id: str):
+        """
+        Main processing pipeline
+        
+        Steps:
+        1. Download video from Drive
+        2. Extract audio and frames
+        3. Transcribe audio (chunked)
+        4. Analyze transcript
+        5. Analyze frames
+        6. Synthesize results
+        7. Store in MongoDB and Drive
+        """
+        try:
+            # Get job from database
+            job = await self._get_job(job_id)
+            
+            # Update status
+            await self._update_job(job_id, {
+                "status": "downloading",
+                "progress": 0.05
+            })
+            
+            # Step 1: Download video
+            video_path = await self._download_video(job)
+            await self._update_job(job_id, {"progress": 0.1})
+            
+            # Get video metadata
+            duration = self.ffmpeg.get_video_duration(video_path)
+            await self._update_job(job_id, {"duration": duration})
+            
+            # Step 2: Extract audio
+            await self._update_job(job_id, {
+                "status": "extracting",
+                "progress": 0.15
+            })
+            audio_path = await self._extract_audio(video_path, job_id)
+            await self._update_job(job_id, {"progress": 0.25})
+            
+            # Step 3: Transcribe audio
+            await self._update_job(job_id, {
+                "status": "transcribing",
+                "progress": 0.3
+            })
+            transcript = await self._transcribe_audio(audio_path)
+            await self._update_job(job_id, {
+                "transcript": [seg.dict() for seg in transcript],
+                "progress": 0.5
+            })
+            
+            # Step 4: Analyze transcript
+            await self._update_job(job_id, {
+                "status": "analyzing",
+                "progress": 0.55
+            })
+            transcript_text = " ".join([seg.text for seg in transcript])
+            transcript_analysis = await gemini_service.analyze_transcript(
+                transcript_text, 
+                duration
+            )
+            await self._update_job(job_id, {"progress": 0.6})
+            
+            # Step 5: Extract frames
+            await self._update_job(job_id, {"progress": 0.65})
+            frames = await self._extract_frames(video_path, job_id, transcript_analysis)
+            await self._update_job(job_id, {
+                "total_frames": len(frames),
+                "progress": 0.7
+            })
+            
+            # Step 6: Analyze frames
+            await self._update_job(job_id, {"progress": 0.75})
+            frame_analyses = await self._analyze_frames(frames, job_id, transcript_analysis)
+            await self._update_job(job_id, {"progress": 0.85})
+            
+            # Step 7: Synthesize results
+            await self._update_job(job_id, {
+                "status": "synthesizing",
+                "progress": 0.9
+            })
+            synthesis = await gemini_service.synthesize_results(
+                transcript_analysis,
+                frame_analyses,
+                duration
+            )
+            
+            # Step 8: Build final output
+            topics = await self._build_topics(
+                synthesis.get("topics", []),
+                frame_analyses,
+                transcript
+            )
+            
+            # Step 9: Update job with final results
+            await self._update_job(job_id, {
+                "status": "completed",
+                "progress": 1.0,
+                "topics": [topic.dict() for topic in topics],
+                "executive_summary": synthesis.get("executive_summary", ""),
+                "key_takeaways": synthesis.get("key_takeaways", []),
+                "entities": synthesis.get("entities", {}),
+                "completed_at": datetime.utcnow()
+            })
+            
+            # Cleanup temp files
+            await self._cleanup(job_id)
+            
+            print(f"Job {job_id} completed successfully")
+            
+        except Exception as e:
+            print(f"Error processing job {job_id}: {e}")
+            await self._update_job(job_id, {
+                "status": "failed",
+                "error_message": str(e)
+            })
+    
+    async def _download_video(self, job: Dict) -> str:
+        """Download video from Google Drive"""
+        file_id = drive_service.extract_file_id(job["drive_video_url"])
+        
+        # Get file metadata
+        metadata = drive_service.get_file_metadata(file_id)
+        video_name = metadata.get("name", f"video_{job['_id']}.mp4")
+        
+        # Update job with file info
+        await self._update_job(str(job["_id"]), {
+            "drive_file_id": file_id,
+            "video_name": video_name
+        })
+        
+        # Download to temp directory
+        video_path = os.path.join(config.TEMP_DIR, f"{job['_id']}_video.mp4")
+        drive_service.download_file(file_id, video_path)
+        
+        return video_path
+    
+    async def _extract_audio(self, video_path: str, job_id: str) -> str:
+        """Extract audio from video"""
+        audio_path = os.path.join(config.TEMP_DIR, f"{job_id}_audio.wav")
+        self.ffmpeg.extract_audio(video_path, audio_path)
+        return audio_path
+    
+    async def _transcribe_audio(self, audio_path: str) -> list[TranscriptSegment]:
+        """Transcribe audio in chunks"""
+        # Split audio into chunks
+        chunks = self.ffmpeg.split_audio(audio_path)
+        
+        all_segments = []
+        
+        for chunk_path, start_time, end_time in chunks:
+            try:
+                segments = await gemini_service.transcribe_audio(
+                    chunk_path, 
+                    start_time
+                )
+                all_segments.extend(segments)
+            except Exception as e:
+                print(f"Error transcribing chunk {chunk_path}: {e}")
+            finally:
+                # Clean up chunk file
+                if os.path.exists(chunk_path):
+                    os.remove(chunk_path)
+        
+        # Deduplicate overlapping segments
+        deduplicated = self._deduplicate_segments(all_segments)
+        
+        return deduplicated
+    
+    def _deduplicate_segments(
+        self, 
+        segments: list[TranscriptSegment]
+    ) -> list[TranscriptSegment]:
+        """Remove duplicate segments from overlapping chunks"""
+        if not segments:
+            return []
+        
+        # Sort by start time
+        sorted_segments = sorted(segments, key=lambda x: x.start_time)
+        
+        deduplicated = [sorted_segments[0]]
+        
+        for seg in sorted_segments[1:]:
+            last_seg = deduplicated[-1]
+            
+            # If this segment overlaps significantly with the last one, skip it
+            if seg.start_time < last_seg.end_time - 5:  # 5 second threshold
+                continue
+            
+            deduplicated.append(seg)
+        
+        return deduplicated
+    
+    async def _extract_frames(
+        self,
+        video_path: str,
+        job_id: str,
+        transcript_analysis: Dict
+    ) -> list[tuple[str, float]]:
+        """Extract keyframes from video"""
+        frames_dir = os.path.join(config.TEMP_DIR, f"{job_id}_frames")
+        
+        # Extract frames at regular intervals
+        frames = self.ffmpeg.extract_keyframes(
+            video_path,
+            frames_dir,
+            interval=config.KEYFRAME_INTERVAL
+        )
+        
+        # TODO: In Phase 2, add smart frame selection based on visual_cues
+        # from transcript_analysis
+        
+        return frames
+    
+    async def _analyze_frames(
+        self,
+        frames: list[tuple[str, float]],
+        job_id: str,
+        transcript_analysis: Dict
+    ) -> list[Dict]:
+        """Analyze frames and upload to Drive"""
+        # Create folder in Drive for this job
+        folder_name = f"video_{job_id}_frames"
+        folder_id = drive_service.create_folder(
+            folder_name,
+            parent_folder_id=config.DRIVE_FOLDER_ID
+        )
+        
+        await self._update_job(job_id, {"drive_folder_id": folder_id})
+        
+        # Get frame paths
+        frame_paths = [path for path, _ in frames]
+        
+        # Analyze frames with Gemini Vision
+        analyses = await gemini_service.analyze_frames(frame_paths)
+        
+        # Upload frames to Drive and add URLs
+        for i, (analysis, (frame_path, timestamp)) in enumerate(zip(analyses, frames)):
+            try:
+                # Upload to Drive
+                uploaded = drive_service.upload_file(
+                    frame_path,
+                    folder_id=folder_id,
+                    file_name=f"frame_{i:04d}_{int(timestamp)}s.jpg"
+                )
+                
+                # Add Drive URL to analysis
+                analysis["drive_url"] = uploaded.get("webViewLink")
+                analysis["timestamp"] = timestamp
+                analysis["timestamp_str"] = self.ffmpeg.format_timestamp(timestamp)
+                
+            except Exception as e:
+                print(f"Error uploading frame {frame_path}: {e}")
+        
+        return analyses
+    
+    async def _build_topics(
+        self,
+        topic_data: list[Dict],
+        frame_analyses: list[Dict],
+        transcript: list[TranscriptSegment]
+    ) -> list[Topic]:
+        """Build Topic objects with frames"""
+        topics = []
+        
+        for topic_info in topic_data:
+            # Parse timestamp range
+            ts_range = topic_info.get("timestamp_range", ["00:00:00", "00:00:00"])
+            start_seconds = self._parse_timestamp(ts_range[0])
+            end_seconds = self._parse_timestamp(ts_range[1])
+            
+            # Find frames within this topic's time range
+            topic_frames = []
+            for analysis in frame_analyses:
+                frame_ts = analysis.get("timestamp", 0)
+                if start_seconds <= frame_ts <= end_seconds:
+                    frame = Frame(
+                        timestamp=analysis.get("timestamp_str", "00:00:00"),
+                        frame_number=len(topic_frames),
+                        drive_url=analysis.get("drive_url"),
+                        description=analysis.get("description"),
+                        ocr_text=analysis.get("ocr_text"),
+                        type=analysis.get("type", "other")
+                    )
+                    topic_frames.append(frame)
+            
+            topic = Topic(
+                title=topic_info.get("title", "Untitled"),
+                timestamp_range=ts_range,
+                summary=topic_info.get("summary", ""),
+                key_points=topic_info.get("key_points", []),
+                frames=topic_frames,
+                quotes=topic_info.get("quotes", [])
+            )
+            topics.append(topic)
+        
+        return topics
+    
+    def _parse_timestamp(self, ts: str) -> float:
+        """Convert HH:MM:SS to seconds"""
+        parts = ts.split(":")
+        if len(parts) == 3:
+            hours, minutes, seconds = map(float, parts)
+            return hours * 3600 + minutes * 60 + seconds
+        return 0.0
+    
+    async def _cleanup(self, job_id: str):
+        """Clean up temporary files"""
+        patterns = [
+            f"{job_id}_video.mp4",
+            f"{job_id}_audio.wav"
+        ]
+        
+        for pattern in patterns:
+            path = os.path.join(config.TEMP_DIR, pattern)
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    print(f"Error removing {path}: {e}")
+        
+        # Remove frames directory
+        frames_dir = os.path.join(config.TEMP_DIR, f"{job_id}_frames")
+        if os.path.exists(frames_dir):
+            try:
+                import shutil
+                shutil.rmtree(frames_dir)
+            except Exception as e:
+                print(f"Error removing frames directory: {e}")
+    
+    async def _get_job(self, job_id: str) -> Dict:
+        """Get job from database"""
+        database = db.get_db()
+        job = await database.video_jobs.find_one({"_id": ObjectId(job_id)})
+        if not job:
+            raise Exception(f"Job {job_id} not found")
+        return job
+    
+    async def _update_job(self, job_id: str, updates: Dict):
+        """Update job in database"""
+        database = db.get_db()
+        updates["updated_at"] = datetime.utcnow()
+        await database.video_jobs.update_one(
+            {"_id": ObjectId(job_id)},
+            {"$set": updates}
+        )
+
+
+# Singleton instance
+pipeline = ProcessingPipeline()
