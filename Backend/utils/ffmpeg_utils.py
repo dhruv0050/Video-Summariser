@@ -1,34 +1,64 @@
 import subprocess
 import os
+import re
 from typing import List, Tuple
 import config
+
+# Use imageio-ffmpeg's bundled FFmpeg binary
+try:
+    import imageio_ffmpeg
+    FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
+    print(f"✅ Using imageio-ffmpeg binary: {FFMPEG_PATH}")
+except (ImportError, RuntimeError):
+    FFMPEG_PATH = 'ffmpeg'
+    print("⚠️  imageio-ffmpeg not found, falling back to system ffmpeg")
 
 
 class FFmpegUtils:
     @staticmethod
     def check_ffmpeg() -> bool:
-        """Check if FFmpeg is installed"""
+        """Check if FFmpeg is available"""
         try:
-            subprocess.run(['ffmpeg', '-version'], 
+            subprocess.run([FFMPEG_PATH, '-version'], 
                          capture_output=True, 
-                         check=True)
+                         check=True,
+                         timeout=5)
             return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             return False
     
     @staticmethod
     def get_video_duration(video_path: str) -> float:
-        """Get video duration in seconds"""
-        cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            video_path
-        ]
+        """Get video duration in seconds using ffmpeg"""
+        # Convert to absolute path
+        video_path = os.path.abspath(video_path)
         
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return float(result.stdout.strip())
+        try:
+            # Use ffmpeg to get duration from the file
+            cmd = [
+                FFMPEG_PATH,
+                '-i', video_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            output = result.stderr  # ffmpeg outputs to stderr
+            
+            # Parse duration from output: Duration: HH:MM:SS.ms
+            match = re.search(r'Duration: (\d+):(\d+):(\d+\.\d+)', output)
+            if match:
+                hours = int(match.group(1))
+                minutes = int(match.group(2))
+                seconds = float(match.group(3))
+                total_seconds = hours * 3600 + minutes * 60 + seconds
+                return total_seconds
+            
+            # Fallback: return default if parsing fails
+            print(f"Warning: Could not parse duration from {video_path}")
+            return 0.0
+            
+        except Exception as e:
+            print(f"Error getting video duration: {e}")
+            return 0.0
     
     @staticmethod
     def extract_audio(
@@ -48,7 +78,7 @@ class FFmpegUtils:
             Path to extracted audio file
         """
         cmd = [
-            'ffmpeg',
+            FFMPEG_PATH,
             '-i', video_path,
             '-vn',  # No video
             '-acodec', 'pcm_s16le',  # PCM 16-bit
@@ -58,7 +88,7 @@ class FFmpegUtils:
             output_path
         ]
         
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, capture_output=True, check=True, timeout=300)
         return output_path
     
     @staticmethod
@@ -93,7 +123,7 @@ class FFmpegUtils:
             
             # Extract chunk
             cmd = [
-                'ffmpeg',
+                FFMPEG_PATH,
                 '-i', audio_path,
                 '-ss', str(current_time),
                 '-t', str(end_time - current_time),
@@ -102,7 +132,7 @@ class FFmpegUtils:
                 chunk_path
             ]
             
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(cmd, capture_output=True, check=True, timeout=300)
             
             chunks.append((chunk_path, current_time, end_time))
             
@@ -141,7 +171,7 @@ class FFmpegUtils:
             frame_path = os.path.join(output_dir, f"frame_{frame_index:04d}.jpg")
             
             cmd = [
-                'ffmpeg',
+                FFMPEG_PATH,
                 '-ss', str(current_time),
                 '-i', video_path,
                 '-frames:v', '1',
@@ -151,7 +181,7 @@ class FFmpegUtils:
             ]
             
             try:
-                subprocess.run(cmd, capture_output=True, check=True)
+                subprocess.run(cmd, capture_output=True, check=True, timeout=60)
                 frames.append((frame_path, current_time))
                 frame_index += 1
             except subprocess.CalledProcessError:
@@ -173,4 +203,4 @@ class FFmpegUtils:
 
 # Check FFmpeg availability on module load
 if not FFmpegUtils.check_ffmpeg():
-    print("WARNING: FFmpeg not found. Please install FFmpeg to process videos.")
+    print("WARNING: FFmpeg not found. Please ensure imageio-ffmpeg is installed or FFmpeg is in PATH.")

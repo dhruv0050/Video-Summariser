@@ -140,7 +140,7 @@ const Landing = () => {
       <header className="hero">
         <div>
           <p className="eyebrow">Gemini + Google Drive</p>
-          <h1>Long-Form Video Intelligence</h1>
+          <h1>Video Summariser</h1>
           <p className="muted">
             Paste a Google Drive video link, kick off processing, and see transcript + key frames + insights.
           </p>
