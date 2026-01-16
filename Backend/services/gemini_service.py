@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from PIL import Image
@@ -9,6 +10,28 @@ from models.video_job import TranscriptSegment, Topic, Frame
 
 # Configure Gemini
 genai.configure(api_key=config.GEMINI_API_KEY)
+
+def timestamp_to_seconds(timestamp_str: str) -> float:
+    """Convert HH:MM:SS format to seconds"""
+    try:
+        parts = timestamp_str.strip().split(':')
+        if len(parts) == 3:
+            hours, minutes, seconds = map(float, parts)
+            return hours * 3600 + minutes * 60 + seconds
+        elif len(parts) == 2:
+            minutes, seconds = map(float, parts)
+            return minutes * 60 + seconds
+        else:
+            return float(parts[0])
+    except:
+        return 0.0
+
+def seconds_to_timestamp(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 def retry_with_backoff(func, max_retries=3, initial_delay=2):
     """Retry a function with exponential backoff"""

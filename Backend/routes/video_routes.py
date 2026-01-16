@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
 from bson import ObjectId
 from datetime import datetime
 from typing import List
@@ -8,7 +8,8 @@ from models.video_job import (
     VideoJobCreate, 
     VideoJobResponse, 
     VideoJobResult,
-    VideoJob
+    VideoJob,
+    ReportSummary
 )
 from services.pipeline import pipeline
 
@@ -211,3 +212,57 @@ async def delete_job(job_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete job: {str(e)}")
+
+
+@router.get("/reports", response_model=List[ReportSummary])
+async def get_reports(
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+    status: str = Query(None)
+):
+    """
+    Get all past reports with pagination
+    
+    Args:
+        page: Page number (1-indexed)
+        limit: Number of results per page
+        status: Filter by status (optional)
+    
+    Returns:
+        List of report summaries
+    """
+    try:
+        database = db.get_db()
+        
+        # Build query
+        query = {}
+        if status:
+            query["status"] = status
+        
+        # Calculate skip
+        skip = (page - 1) * limit
+        
+        # Get completed jobs sorted by creation date (newest first)
+        jobs = await database.video_jobs.find(query)\
+            .sort("created_at", -1)\
+            .skip(skip)\
+            .limit(limit)\
+            .to_list(length=limit)
+        
+        reports = []
+        for job in jobs:
+            reports.append(ReportSummary(
+                job_id=str(job.get("_id")),
+                video_name=job.get("video_name"),
+                status=job.get("status"),
+                duration=job.get("duration"),
+                topics_count=len(job.get("topics", [])),
+                created_at=job.get("created_at"),
+                completed_at=job.get("completed_at"),
+                executive_summary=job.get("executive_summary")
+            ))
+        
+        return reports
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get reports: {str(e)}")

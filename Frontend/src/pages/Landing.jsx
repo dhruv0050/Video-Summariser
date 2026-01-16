@@ -1,8 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const Landing = () => {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [driveUrl, setDriveUrl] = useState('');
   const [videoName, setVideoName] = useState('');
   const [jobId, setJobId] = useState('');
@@ -11,19 +14,30 @@ const Landing = () => {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [polling, setPolling] = useState(false);
+  const [viewingPastReport, setViewingPastReport] = useState(false);
 
   const canSubmit = useMemo(() => driveUrl.trim().length > 0, [driveUrl]);
 
+  // Check if we're viewing a past report from URL params
+  useEffect(() => {
+    const queryJobId = searchParams.get('jobId');
+    if (queryJobId) {
+      setViewingPastReport(true);
+      setJobId(queryJobId);
+      fetchResults(queryJobId);
+    }
+  }, [searchParams]);
+
   useEffect(() => {
     let interval;
-    if (jobId && polling) {
+    if (jobId && polling && !viewingPastReport) {
       interval = setInterval(() => pollStatus(jobId), 5000);
       pollStatus(jobId); // immediate poll
     }
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [jobId, polling]);
+  }, [jobId, polling, viewingPastReport]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -140,17 +154,73 @@ const Landing = () => {
       <header className="hero">
         <div>
           <p className="eyebrow">Gemini + Google Drive</p>
-          <h1>Video Summariser</h1>
+          <h1>Video Summarizer</h1>
           <p className="muted">
             Paste a Google Drive video link, kick off processing, and see transcript + key frames + insights.
           </p>
         </div>
-        <div className="status-chip">
-          <span className={`dot dot-${status === 'completed' ? 'green' : status === 'failed' ? 'red' : 'amber'}`} />
-          <span>{status === 'idle' ? 'Idle' : status}</span>
+        <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+          {viewingPastReport && (
+            <button
+              onClick={() => {
+                setViewingPastReport(false);
+                setJobId('');
+                setResult(null);
+                setDriveUrl('');
+                setVideoName('');
+                navigate('/');
+              }}
+              style={{
+                padding: '10px 20px',
+                backgroundColor: 'rgba(255,255,255,0.1)',
+                color: 'white',
+                border: '1px solid rgba(255,255,255,0.2)',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseOver={(e) => {
+                e.target.style.backgroundColor = 'rgba(255,255,255,0.15)';
+              }}
+              onMouseOut={(e) => {
+                e.target.style.backgroundColor = 'rgba(255,255,255,0.1)';
+              }}
+            >
+              ← Back to New Video
+            </button>
+          )}
+          <button
+            onClick={() => navigate('/reports')}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: 'rgba(255,255,255,0.1)',
+              color: 'white',
+              border: '1px solid rgba(255,255,255,0.2)',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseOver={(e) => {
+              e.target.style.backgroundColor = 'rgba(255,255,255,0.15)';
+            }}
+            onMouseOut={(e) => {
+              e.target.style.backgroundColor = 'rgba(255,255,255,0.1)';
+            }}
+          >
+            📊 Past Reports
+          </button>
+          <div className="status-chip">
+            <span className={`dot dot-${status === 'completed' ? 'green' : status === 'failed' ? 'red' : 'amber'}`} />
+            <span>{status === 'idle' || viewingPastReport ? 'Completed' : status}</span>
+          </div>
         </div>
       </header>
 
+      {!viewingPastReport && (
       <form className="card form" onSubmit={handleSubmit}>
         <div className="field">
           <label>Google Drive Video URL</label>
@@ -177,7 +247,7 @@ const Landing = () => {
           <button type="submit" disabled={!canSubmit || status === 'pending' || polling}>
             {status === 'pending' || polling ? 'Processing…' : 'Start Processing'}
           </button>
-          {jobId && <span className="muted">Job ID: {jobId}</span>}
+          {jobId && !viewingPastReport && <span className="muted">Job ID: {jobId}</span>}
         </div>
 
         {error && <div className="error">{error}</div>}
@@ -189,6 +259,7 @@ const Landing = () => {
           </div>
         )}
       </form>
+      )}
 
       {result && (
         <section className="grid">

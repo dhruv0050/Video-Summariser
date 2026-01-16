@@ -64,7 +64,7 @@ class ProcessingPipeline:
             })
             transcript = await self._transcribe_audio(audio_path)
             await self._update_job(job_id, {
-                "transcript": [seg.dict() for seg in transcript],
+                "transcript": [seg.model_dump() for seg in transcript],
                 "progress": 0.5
             })
             
@@ -112,13 +112,19 @@ class ProcessingPipeline:
             )
             
             # Step 9: Update job with final results
+            # Convert to dict - topics are Pydantic models, frames are already dicts
+            topics_data = [topic.model_dump() for topic in topics]
+            frames_data = frame_analyses if frame_analyses else []
+            
             await self._update_job(job_id, {
                 "status": "completed",
                 "progress": 1.0,
-                "topics": [topic.dict() for topic in topics],
+                "topics": topics_data,
+                "frames": frames_data,
                 "executive_summary": synthesis.get("executive_summary", ""),
                 "key_takeaways": synthesis.get("key_takeaways", []),
                 "entities": synthesis.get("entities", {}),
+                "report": synthesis,  # Store full synthesis result
                 "completed_at": datetime.utcnow()
             })
             
@@ -280,21 +286,38 @@ class ProcessingPipeline:
         transcript: list[TranscriptSegment]
     ) -> list[Topic]:
         """Build Topic objects with frames"""
+        from services.gemini_service import timestamp_to_seconds, seconds_to_timestamp
+        
         topics = []
         
         for topic_info in topic_data:
-            # Parse timestamp range
+            # Parse timestamp range - ensure we have valid timestamps
             ts_range = topic_info.get("timestamp_range", ["00:00:00", "00:00:00"])
-            start_seconds = self._parse_timestamp(ts_range[0])
-            end_seconds = self._parse_timestamp(ts_range[1])
+            
+            # Convert to seconds and back to ensure consistency
+            if ts_range and len(ts_range) >= 2:
+                start_seconds = timestamp_to_seconds(ts_range[0])
+                end_seconds = timestamp_to_seconds(ts_range[1])
+            else:
+                start_seconds = 0.0
+                end_seconds = 0.0
+            
+            # Ensure timestamps are valid
+            if start_seconds < 0:
+                start_seconds = 0.0
+            if end_seconds < start_seconds:
+                end_seconds = start_seconds + 600  # Default 10 min if end is before start
             
             # Find frames within this topic's time range
             topic_frames = []
             for analysis in frame_analyses:
                 frame_ts = analysis.get("timestamp", 0)
+                if isinstance(frame_ts, str):
+                    frame_ts = timestamp_to_seconds(frame_ts)
+                    
                 if start_seconds <= frame_ts <= end_seconds:
                     frame = Frame(
-                        timestamp=analysis.get("timestamp_str", "00:00:00"),
+                        timestamp=seconds_to_timestamp(frame_ts),
                         frame_number=len(topic_frames),
                         drive_url=analysis.get("drive_url"),
                         description=analysis.get("description"),
@@ -305,11 +328,14 @@ class ProcessingPipeline:
             
             topic = Topic(
                 title=topic_info.get("title", "Untitled"),
-                timestamp_range=ts_range,
+                timestamp_range=[seconds_to_timestamp(start_seconds), seconds_to_timestamp(end_seconds)],
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
                 summary=topic_info.get("summary", ""),
                 key_points=topic_info.get("key_points", []),
                 frames=topic_frames,
-                quotes=topic_info.get("quotes", [])
+                quotes=topic_info.get("quotes", []),
+                visual_cues=topic_info.get("visual_cues", [])
             )
             topics.append(topic)
         
@@ -317,11 +343,8 @@ class ProcessingPipeline:
     
     def _parse_timestamp(self, ts: str) -> float:
         """Convert HH:MM:SS to seconds"""
-        parts = ts.split(":")
-        if len(parts) == 3:
-            hours, minutes, seconds = map(float, parts)
-            return hours * 3600 + minutes * 60 + seconds
-        return 0.0
+        from services.gemini_service import timestamp_to_seconds
+        return timestamp_to_seconds(ts)
     
     async def _cleanup(self, job_id: str):
         """Clean up temporary files"""

@@ -31,11 +31,14 @@ class Frame(BaseModel):
 
 class Topic(BaseModel):
     title: str
-    timestamp_range: List[str]  # [start, end]
+    timestamp_range: List[str]  # [start, end] in HH:MM:SS format
+    start_seconds: float = 0.0  # For easier sorting
+    end_seconds: float = 0.0
     summary: Optional[str] = None
     key_points: List[str] = []
     frames: List[Frame] = []
     quotes: List[str] = []
+    visual_cues: List[str] = []
 
 
 class TranscriptSegment(BaseModel):
@@ -67,9 +70,13 @@ class VideoJob(BaseModel):
     # Processing results
     transcript: List[TranscriptSegment] = []
     topics: List[Topic] = []
+    frames: List[Frame] = []
     executive_summary: Optional[str] = None
     key_takeaways: List[str] = []
     entities: Dict[str, List[str]] = {}
+    
+    # Report/Synthesis (stored for easy retrieval)
+    report: Dict[str, Any] = {}  # Full synthesis result
     
     # Metadata
     duration: Optional[float] = None
@@ -104,11 +111,27 @@ class VideoJobResult(BaseModel):
     duration: Optional[float] = None
     executive_summary: Optional[str] = None
     topics: List[Topic] = []
+    frames: List[Frame] = []
     key_takeaways: List[str] = []
     entities: Dict[str, List[str]] = {}
     total_frames: int = 0
     processing_cost: Optional[float] = None
     completed_at: Optional[datetime] = None
+    
+    class Config:
+        json_encoders = {ObjectId: str}
+
+
+class ReportSummary(BaseModel):
+    """Summary of a report for listing"""
+    job_id: str
+    video_name: Optional[str] = None
+    status: str
+    duration: Optional[float] = None
+    topics_count: int = 0
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    executive_summary: Optional[str] = None
     
     class Config:
         json_encoders = {ObjectId: str}
