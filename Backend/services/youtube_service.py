@@ -9,6 +9,39 @@ class YouTubeService:
     """Service for downloading YouTube videos"""
     
     @staticmethod
+    def _resolve_cookies_path():
+        """Resolve cookies file path with multiple fallback strategies"""
+        if not config.YOUTUBE_COOKIES_PATH:
+            return None
+        
+        potential_paths = []
+        
+        # 1. Use as-is if absolute
+        if os.path.isabs(config.YOUTUBE_COOKIES_PATH):
+            potential_paths.append(config.YOUTUBE_COOKIES_PATH)
+        else:
+            # 2. Relative to current working directory
+            potential_paths.append(os.path.abspath(config.YOUTUBE_COOKIES_PATH))
+            
+            # 3. Relative to Backend directory (where main.py is)
+            script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            potential_paths.append(os.path.join(script_dir, config.YOUTUBE_COOKIES_PATH))
+            
+            # 4. Relative to utils directory
+            utils_dir = os.path.dirname(os.path.abspath(__file__))
+            potential_paths.append(os.path.join(utils_dir, 'cookies.txt'))
+            
+            # 5. Try just the filename in Backend directory
+            potential_paths.append(os.path.join(script_dir, os.path.basename(config.YOUTUBE_COOKIES_PATH)))
+        
+        # Try each potential path
+        for path in potential_paths:
+            if os.path.exists(path) and os.path.isfile(path):
+                return os.path.abspath(path)
+        
+        return None
+    
+    @staticmethod
     def extract_video_id(youtube_url: str) -> str:
         """Extract video ID from various YouTube URL formats"""
         patterns = [
@@ -46,14 +79,10 @@ class YouTubeService:
             },
         }
         
-        # Add cookies if configured (for get_video_info)
-        if config.YOUTUBE_COOKIES_PATH and os.path.exists(config.YOUTUBE_COOKIES_PATH):
-            ydl_opts['cookies'] = config.YOUTUBE_COOKIES_PATH
-        elif config.YOUTUBE_COOKIES_FROM_BROWSER:
-            try:
-                ydl_opts['cookies_from_browser'] = (config.YOUTUBE_COOKIES_FROM_BROWSER,)
-            except:
-                pass  # Will fall back to tv_embedded client
+        # Add cookies if configured (use same path resolution as download_video)
+        cookies_path = YouTubeService._resolve_cookies_path()
+        if cookies_path:
+            ydl_opts['cookies'] = cookies_path
         
         url = f"https://www.youtube.com/watch?v={video_id}"
         
@@ -141,26 +170,17 @@ class YouTubeService:
         # Add cookies if configured (prioritize cookies file for server environments)
         # Note: cookies_from_browser won't work on servers like Render (no browser installed)
         cookies_configured = False
-        if config.YOUTUBE_COOKIES_PATH:
-            # Resolve path - handle both relative and absolute paths
-            cookies_path = config.YOUTUBE_COOKIES_PATH
-            if not os.path.isabs(cookies_path):
-                # If relative, try resolving from current directory and from script directory
-                if os.path.exists(cookies_path):
-                    cookies_path = os.path.abspath(cookies_path)
-                else:
-                    # Try relative to Backend directory (where main.py is)
-                    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                    potential_path = os.path.join(script_dir, cookies_path)
-                    if os.path.exists(potential_path):
-                        cookies_path = potential_path
-            
-            if os.path.exists(cookies_path):
-                ydl_opts['cookies'] = cookies_path
-                print(f"Using cookies from file: {cookies_path}")
-                cookies_configured = True
-            else:
-                print(f"Warning: Cookies file not found at: {config.YOUTUBE_COOKIES_PATH} (resolved: {cookies_path})")
+        cookies_path = YouTubeService._resolve_cookies_path()
+        
+        if cookies_path:
+            ydl_opts['cookies'] = cookies_path
+            file_size = os.path.getsize(cookies_path)
+            print(f"✅ Using cookies from file: {cookies_path} ({file_size} bytes)")
+            cookies_configured = True
+        elif config.YOUTUBE_COOKIES_PATH:
+            print(f"❌ Cookies file not found at: {config.YOUTUBE_COOKIES_PATH}")
+            print(f"   Current working directory: {os.getcwd()}")
+            print(f"   Script directory: {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}")
         elif config.YOUTUBE_COOKIES_FROM_BROWSER:
             # Try cookies_from_browser, but it may fail on servers
             try:
@@ -174,7 +194,10 @@ class YouTubeService:
         # If no cookies configured, try tv_embedded client which sometimes bypasses bot detection
         if not cookies_configured:
             ydl_opts['extractor_args']['youtube']['player_client'] = ['tv_embedded', 'ios', 'android', 'web']
-            print("No cookies configured - using tv_embedded client (best for server environments)")
+            print("⚠️ No cookies configured - using tv_embedded client (may still trigger bot detection)")
+            print("   Recommendation: Set YOUTUBE_COOKIES_PATH to a valid cookies.txt file")
+        else:
+            print(f"✅ Cookies configured - using authenticated requests")
         
         # If the URL is just a video ID, construct full URL
         if not youtube_url.startswith('http'):

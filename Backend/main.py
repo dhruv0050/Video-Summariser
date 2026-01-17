@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import os
 
 from models.database import db
 from routes.video_routes import router as video_router
@@ -15,6 +16,22 @@ async def lifespan(app: FastAPI):
     print("🚀 Video Intelligence Pipeline API started")
     print(f"📁 Temp directory: {config.TEMP_DIR}")
     print(f"🔑 Using model: {config.MODEL}")
+    
+    # Check YouTube cookies configuration
+    if config.YOUTUBE_COOKIES_PATH:
+        from services.youtube_service import YouTubeService
+        cookies_path = YouTubeService._resolve_cookies_path()
+        if cookies_path:
+            file_size = os.path.getsize(cookies_path)
+            print(f"✅ YouTube cookies configured: {cookies_path} ({file_size} bytes)")
+        else:
+            print(f"⚠️ YouTube cookies path set but file not found: {config.YOUTUBE_COOKIES_PATH}")
+            print(f"   Current working directory: {os.getcwd()}")
+    elif config.YOUTUBE_COOKIES_FROM_BROWSER:
+        print(f"⚠️ YOUTUBE_COOKIES_FROM_BROWSER set to: {config.YOUTUBE_COOKIES_FROM_BROWSER}")
+        print(f"   Note: This won't work on servers like Render. Use YOUTUBE_COOKIES_PATH instead.")
+    else:
+        print("ℹ️ No YouTube cookies configured - using tv_embedded client")
     
     yield
     
