@@ -34,7 +34,23 @@ class YouTubeService:
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
+            # Use iOS client for better compatibility
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['ios', 'android', 'web']
+                }
+            },
+            # Better headers
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+            },
         }
+        
+        # Add cookies if configured
+        if config.YOUTUBE_COOKIES_PATH and os.path.exists(config.YOUTUBE_COOKIES_PATH):
+            ydl_opts['cookies'] = config.YOUTUBE_COOKIES_PATH
+        elif config.YOUTUBE_COOKIES_FROM_BROWSER:
+            ydl_opts['cookies_from_browser'] = (config.YOUTUBE_COOKIES_FROM_BROWSER,)
         
         url = f"https://www.youtube.com/watch?v={video_id}"
         
@@ -91,6 +107,7 @@ class YouTubeService:
             'best'
         ]
         
+        # Build yt-dlp options with cookie support
         ydl_opts = {
             'format': format_selectors[0],  # Start with best MP4
             'outtmpl': base_output_path + '.%(ext)s',  # yt-dlp will add extension
@@ -99,16 +116,32 @@ class YouTubeService:
             'progress_hooks': [YouTubeService._progress_hook],
             'no_check_certificate': False,
             'prefer_insecure': False,
+            # Use iOS client which often bypasses bot detection better
             'extractor_args': {
                 'youtube': {
                     'skip': ['hls'],  # Try to skip HLS if possible
-                    'player_client': ['android', 'web']  # Try android client first (more reliable)
+                    'player_client': ['ios', 'android', 'web']  # Try iOS first (best for avoiding bot detection)
                 }
+            },
+            # Better headers to mimic real browser
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Sec-Fetch-Mode': 'navigate',
             },
             # Retry on fragment errors
             'fragment_retries': 3,
             'retries': 3,
         }
+        
+        # Add cookies if configured
+        if config.YOUTUBE_COOKIES_PATH and os.path.exists(config.YOUTUBE_COOKIES_PATH):
+            ydl_opts['cookies'] = config.YOUTUBE_COOKIES_PATH
+            print(f"Using cookies from file: {config.YOUTUBE_COOKIES_PATH}")
+        elif config.YOUTUBE_COOKIES_FROM_BROWSER:
+            ydl_opts['cookies_from_browser'] = (config.YOUTUBE_COOKIES_FROM_BROWSER,)
+            print(f"Using cookies from browser: {config.YOUTUBE_COOKIES_FROM_BROWSER}")
         
         # If the URL is just a video ID, construct full URL
         if not youtube_url.startswith('http'):

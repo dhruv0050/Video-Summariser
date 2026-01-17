@@ -26,6 +26,10 @@ KEYFRAME_INTERVAL = 60  # Extract keyframe every 60 seconds
 MAX_FRAMES_PER_VIDEO = 120  # Maximum frames to extract
 AUDIO_SAMPLE_RATE = 16000  # 16kHz for transcription
 
+# YouTube Configuration (optional)
+YOUTUBE_COOKIES_PATH = os.getenv("YOUTUBE_COOKIES_PATH", None)  # Path to cookies.txt file
+YOUTUBE_COOKIES_FROM_BROWSER = os.getenv("YOUTUBE_COOKIES_FROM_BROWSER", None)  # e.g., "chrome", "firefox", "edge"
+
 # API Configuration
 # Allow localhost for development, add your production domains here
 CORS_ORIGINS = [
