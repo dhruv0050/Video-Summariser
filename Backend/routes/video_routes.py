@@ -281,10 +281,11 @@ async def get_reports(
     try:
         database = db.get_db()
         
-        # Build query
-        query = {}
-        if status:
-            query["status"] = status
+        # Build query - force completed reports only
+        query = {"status": "completed"}
+        # If a status filter is provided, keep it only if it's completed; otherwise still enforce completed
+        if status and status == "completed":
+            query["status"] = "completed"
         
         # Calculate skip
         skip = (page - 1) * limit
@@ -298,6 +299,23 @@ async def get_reports(
         
         reports = []
         for job in jobs:
+            thumbnail_url = None
+            # Prefer top-level frames (stored during processing)
+            frames = job.get("frames", []) or []
+            if frames:
+                thumb_frame = frames[0]
+                thumbnail_url = thumb_frame.get("drive_url") or thumb_frame.get("url")
+
+            # Fallback: look inside topics for a frame with a drive_url
+            if not thumbnail_url:
+                for topic in job.get("topics", []):
+                    topic_frames = topic.get("frames", []) or []
+                    if topic_frames:
+                        thumb_frame = topic_frames[0]
+                        thumbnail_url = thumb_frame.get("drive_url") or thumb_frame.get("url")
+                        if thumbnail_url:
+                            break
+
             reports.append(ReportSummary(
                 job_id=str(job.get("_id")),
                 video_name=job.get("video_name"),
@@ -306,7 +324,13 @@ async def get_reports(
                 topics_count=len(job.get("topics", [])),
                 created_at=job.get("created_at"),
                 completed_at=job.get("completed_at"),
-                executive_summary=job.get("executive_summary")
+                executive_summary=job.get("executive_summary"),
+                thumbnail_url=thumbnail_url,
+                video_source=job.get("video_source"),
+                youtube_url=job.get("youtube_url"),
+                youtube_video_id=job.get("youtube_video_id"),
+                drive_video_url=job.get("drive_video_url"),
+                drive_file_id=job.get("drive_file_id")
             ))
         
         return reports

@@ -90,6 +90,35 @@ const Reports = () => {
     );
   };
 
+  const getVideoLinks = (report) => {
+    // Prefer explicit YouTube id/url
+    if (report.youtube_video_id) {
+      return {
+        embed: `https://www.youtube.com/embed/${report.youtube_video_id}`,
+        link: report.youtube_url || `https://youtu.be/${report.youtube_video_id}`
+      };
+    }
+    // Handle Drive file id or URL
+    if (report.drive_file_id) {
+      return {
+        embed: `https://drive.google.com/file/d/${report.drive_file_id}/preview`,
+        link: `https://drive.google.com/file/d/${report.drive_file_id}/view?usp=sharing`
+      };
+    }
+    if (report.drive_video_url) {
+      // Derive id if possible
+      const match = report.drive_video_url.match(/file\/d\/([^/]+)/);
+      const fileId = match ? match[1] : null;
+      return {
+        embed: fileId
+          ? `https://drive.google.com/file/d/${fileId}/preview`
+          : report.drive_video_url,
+        link: report.drive_video_url
+      };
+    }
+    return { embed: null, link: null };
+  };
+
   return (
     <div className="page">
       <header style={{ padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -185,6 +214,81 @@ const Reports = () => {
                 }}
                 onClick={() => handleViewReport(report.job_id)}
               >
+                {/* Video Embed */}
+                {(() => {
+                  const links = getVideoLinks(report);
+                  return (
+                    <div style={{
+                      position: 'relative',
+                      height: '0',
+                      paddingBottom: '56.25%', // 16:9
+                      borderRadius: '10px',
+                      overflow: 'hidden',
+                      background: 'linear-gradient(135deg, rgba(59,130,246,0.25), rgba(16,185,129,0.25))',
+                      border: '1px solid rgba(255,255,255,0.05)'
+                    }}>
+                      {links.embed ? (
+                        <iframe
+                          src={links.embed}
+                          title={report.video_name || 'Video preview'}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            height: '100%',
+                            border: '0'
+                          }}
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                        />
+                      ) : (
+                        <div style={{
+                          position: 'absolute',
+                          inset: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#d1d5db',
+                          fontSize: '32px',
+                          background: 'linear-gradient(135deg, rgba(59,130,246,0.15), rgba(16,185,129,0.15))'
+                        }}>
+                          🎬
+                        </div>
+                      )}
+                      <div style={{
+                        position: 'absolute',
+                        top: '10px',
+                        right: '10px'
+                      }}>
+                        {getStatusBadge(report.status)}
+                      </div>
+                      {links.link && (
+                        <a
+                          href={links.link}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          style={{
+                            position: 'absolute',
+                            left: '10px',
+                            bottom: '10px',
+                            padding: '8px 12px',
+                            backgroundColor: 'rgba(0,0,0,0.55)',
+                            color: 'white',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            textDecoration: 'none',
+                            border: '1px solid rgba(255,255,255,0.2)'
+                          }}
+                        >
+                          ▶ Open video
+                        </a>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 {/* Header */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
                   <div style={{ flex: 1 }}>
@@ -200,7 +304,6 @@ const Reports = () => {
                       ID: {report.job_id.substring(0, 12)}...
                     </div>
                   </div>
-                  {getStatusBadge(report.status)}
                 </div>
 
                 {/* Summary */}

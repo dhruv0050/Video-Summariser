@@ -140,6 +140,12 @@ class ReportSummary(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
     executive_summary: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    video_source: Optional[str] = None  # "drive" or "youtube"
+    youtube_url: Optional[str] = None
+    youtube_video_id: Optional[str] = None
+    drive_video_url: Optional[str] = None
+    drive_file_id: Optional[str] = None
     
     class Config:
         json_encoders = {ObjectId: str}
