@@ -52,6 +52,225 @@ class GeminiService:
         self.text_model = genai.GenerativeModel(self.model_name)
         # Use gemini-2.5-flash for Vision (higher quota limits)
         self.vision_model = genai.GenerativeModel('gemini-2.5-flash')
+        
+        # Genre mapping for fuzzy matching
+        self.genre_mapping = {
+            # Educational variations
+            "educational": "educational_lecture",
+            "educational_lecture": "educational_lecture",
+            "educational_content": "educational_lecture",
+            "educational_tutorial": "educational_lecture",
+            "lecture": "educational_lecture",
+            "tutorial": "educational_lecture",
+            "course": "educational_lecture",
+            "lesson": "educational_lecture",
+            "training": "educational_lecture",
+            
+            # Podcast variations
+            "podcast": "podcast_panel",
+            "podcast_panel": "podcast_panel",
+            "podcast_interview": "podcast_panel",
+            "podcast_discussion": "podcast_panel",
+            "panel_discussion": "podcast_panel",
+            "roundtable": "podcast_panel",
+            
+            # Interview variations
+            "interview": "interview_qna",
+            "interview_qna": "interview_qna",
+            "qna": "interview_qna",
+            "question_answer": "interview_qna",
+            "conversation": "interview_qna",
+            
+            # Vlog variations
+            "vlog": "vlog",
+            "vlog_personal": "vlog",
+            "day_in_life": "vlog",
+            "travel_vlog": "vlog",
+            "lifestyle": "vlog",
+            
+            # Meeting variations
+            "meeting": "meeting_presentation",
+            "meeting_presentation": "meeting_presentation",
+            "presentation": "meeting_presentation",
+            "business_meeting": "meeting_presentation",
+            "conference": "meeting_presentation",
+            
+            # Single speaker variations
+            "single_speaker": "single_speaker_general",
+            "single_speaker_general": "single_speaker_general",
+            "monologue": "single_speaker_general",
+            "talk": "single_speaker_general",
+            "speech": "single_speaker_general",
+        }
+        
+        # Prompt style snippets keyed by genre. These are appended to existing prompts
+        # while keeping the output JSON schema unchanged.
+        self.genre_prompt_snippets: Dict[str, Dict[str, str]] = {
+            "podcast_panel": {
+                "analysis": (
+                    "Genre guidance: This is a podcast/panel with multiple speakers. "
+                    "Prefer topics organized by discussion segments, speaker turns, questions, and debates. "
+                    "Capture noteworthy quotes and disagreements. Avoid assuming slides unless mentioned."
+                ),
+                "synthesis": (
+                    "Genre guidance: Podcast/panel. Emphasize key arguments by different speakers, "
+                    "consensus vs dissent, and notable quotes. Keep it conversational and accurate."
+                ),
+            },
+            "educational_lecture": {
+                "analysis": (
+                    "Genre guidance: Educational lecture/tutorial. Prefer chaptering by concepts, "
+                    "definitions, examples, steps, and recap. If slides/demos are likely, mark visual cues."
+                ),
+                "synthesis": (
+                    "Genre guidance: Educational. Emphasize learning objectives, step-by-step breakdowns, "
+                    "definitions, examples, and actionable study takeaways."
+                ),
+            },
+            "vlog": {
+                "analysis": (
+                    "Genre guidance: Vlog. Prefer segments by locations/activities/time-of-day changes. "
+                    "Summaries should reflect narrative flow and key moments rather than formal chapters."
+                ),
+                "synthesis": (
+                    "Genre guidance: Vlog. Emphasize storyline, highlights, places/activities, and memorable moments."
+                ),
+            },
+            "single_speaker_general": {
+                "analysis": (
+                    "Genre guidance: Single-speaker general talk (non-educational). "
+                    "Prefer segments by topics, anecdotes, opinions, and conclusions."
+                ),
+                "synthesis": (
+                    "Genre guidance: Single-speaker general. Emphasize main points, opinions, and memorable quotes."
+                ),
+            },
+            "interview_qna": {
+                "analysis": (
+                    "Genre guidance: Interview/Q&A. Prefer segments by questions and answers. "
+                    "Clearly identify the question context and the answer summary."
+                ),
+                "synthesis": (
+                    "Genre guidance: Interview/Q&A. Emphasize key questions, concise answers, and notable quotes."
+                ),
+            },
+            "meeting_presentation": {
+                "analysis": (
+                    "Genre guidance: Meeting/presentation. Prefer segments by agenda items, decisions, action items, "
+                    "and key updates. Capture commitments and owners if present."
+                ),
+                "synthesis": (
+                    "Genre guidance: Meeting/presentation. Emphasize decisions, action items, and summary of updates."
+                ),
+            },
+            "unknown": {
+                "analysis": "Genre guidance: Unknown. Use a neutral, general chaptering approach.",
+                "synthesis": "Genre guidance: Unknown. Use a neutral summary approach.",
+            },
+        }
+    
+    def _normalize_genre(self, genre_raw: str) -> str:
+        """Normalize genre string with fuzzy matching"""
+        if not isinstance(genre_raw, str):
+            return "unknown"
+        
+        genre_lower = genre_raw.lower().strip()
+        
+        # Direct match
+        if genre_lower in self.genre_mapping:
+            return self.genre_mapping[genre_lower]
+        
+        # Fuzzy matching - check if any key is contained in the genre string
+        for key, value in self.genre_mapping.items():
+            if key in genre_lower or genre_lower in key:
+                return value
+        
+        # Check for keywords
+        if any(word in genre_lower for word in ["educational", "lecture", "tutorial", "course", "lesson"]):
+            return "educational_lecture"
+        elif any(word in genre_lower for word in ["podcast", "panel", "discussion", "roundtable"]):
+            return "podcast_panel"
+        elif any(word in genre_lower for word in ["interview", "qna", "question", "conversation"]):
+            return "interview_qna"
+        elif any(word in genre_lower for word in ["vlog", "day", "life", "travel", "lifestyle"]):
+            return "vlog"
+        elif any(word in genre_lower for word in ["meeting", "presentation", "business", "conference"]):
+            return "meeting_presentation"
+        elif any(word in genre_lower for word in ["single", "monologue", "talk", "speech"]):
+            return "single_speaker_general"
+        
+        return "unknown"
+
+    def _genre_snippet(self, genre: Optional[str], key: str) -> str:
+        g = (genre or "unknown").strip() if genre else "unknown"
+        if g not in self.genre_prompt_snippets:
+            g = "unknown"
+        return self.genre_prompt_snippets[g].get(key, "")
+
+    async def classify_video_genre(
+        self,
+        transcript_text: str,
+        duration: float,
+    ) -> Dict[str, Any]:
+        """
+        Classify video genre based on transcript (fast, small prompt).
+
+        Returns:
+            { "genre": str, "confidence": float, "reason": str }
+        """
+        def _classify():
+            # Keep this small and fast: only use a slice of transcript
+            sample = transcript_text[:8000]
+            prompt = f"""
+You are classifying the genre of a video from a transcript sample.
+Video duration: {seconds_to_timestamp(duration)}.
+
+Pick ONE best genre from this list (return exactly one key as 'genre'):
+- podcast_panel (multiple speakers, conversational)
+- educational_lecture (single speaker teaching/tutorial)
+- interview_qna (interviewer + guest Q&A)
+- vlog (personal day-in-life / travel / activities)
+- meeting_presentation (work/meeting/agenda/action-items)
+- single_speaker_general (single speaker talk, non-educational)
+- unknown
+
+Transcript sample:
+{sample}
+
+Return ONLY valid JSON:
+{{
+  "genre": "educational_lecture",
+  "confidence": 0.0,
+  "reason": "Short reason based on transcript cues"
+}}
+"""
+            resp = self.text_model.generate_content(prompt)
+            parsed = self._parse_json_response(resp.text) or {}
+            genre_raw = parsed.get("genre", "unknown")
+            confidence = parsed.get("confidence", 0.0)
+            reason = parsed.get("reason", "")
+            
+            # Normalize genre with fuzzy matching
+            genre = self._normalize_genre(genre_raw)
+            
+            # Basic normalization
+            if not isinstance(confidence, (int, float)):
+                confidence = 0.0
+            if not isinstance(reason, str):
+                reason = ""
+            
+            print(f"Detected genre: {genre} (raw: {genre_raw}, confidence={confidence:.2f})")
+            return {"genre": genre, "confidence": float(confidence), "reason": reason}
+
+        try:
+            return retry_with_backoff(_classify, max_retries=2, initial_delay=1) or {
+                "genre": "unknown",
+                "confidence": 0.0,
+                "reason": "",
+            }
+        except Exception as e:
+            print(f"Genre classification failed: {e}")
+            return {"genre": "unknown", "confidence": 0.0, "reason": ""}
     
     async def transcribe_audio(
         self, 
@@ -150,7 +369,8 @@ class GeminiService:
     async def analyze_transcript(
         self, 
         transcript_text: str,
-        duration: float
+        duration: float,
+        video_genre: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Analyze transcript to extract topics, key moments, etc. with retry logic
@@ -194,7 +414,8 @@ class GeminiService:
                     idx, 
                     len(chunks),
                     chunk_start_approx,
-                    chunk_end_approx
+                    chunk_end_approx,
+                    video_genre=video_genre
                 )
                 if result:
                     # Always provide full duration context, so each chunk should generate topics for full video
@@ -221,7 +442,7 @@ class GeminiService:
                 "visual_cues": all_visual_cues
             }
         else:
-            return await self._analyze_transcript_chunk(transcript_text, duration, 0, 1, 0.0, duration)
+            return await self._analyze_transcript_chunk(transcript_text, duration, 0, 1, 0.0, duration, video_genre=video_genre)
     
     def _deduplicate_topics(self, topics: List[Dict], duration: float) -> List[Dict]:
         """Deduplicate and merge overlapping topics"""
@@ -268,7 +489,8 @@ class GeminiService:
         chunk_idx: int,
         total_chunks: int,
         chunk_start_time: float = None,
-        chunk_end_time: float = None
+        chunk_end_time: float = None,
+        video_genre: Optional[str] = None
     ) -> Dict[str, Any]:
         """Analyze a single transcript chunk"""
         def _analyze():
@@ -279,10 +501,13 @@ class GeminiService:
                 end_ts = seconds_to_timestamp(chunk_end_time)
                 time_info = f"\n\nIMPORTANT: This transcript chunk covers video time {start_ts} to {end_ts} out of total duration {seconds_to_timestamp(duration)}."
             
+            genre_snippet = self._genre_snippet(video_genre, "analysis")
             prompt = f"""
         Analyze this video transcript{chunk_info} (total video duration: {duration/60:.1f} minutes = {seconds_to_timestamp(duration)}) and extract topics that span the ENTIRE video duration.
         
         CRITICAL: You must analyze the transcript and generate topics with timestamps that cover the FULL video duration from 00:00:00 to {seconds_to_timestamp(duration)}. Do not stop at just the beginning or middle - ensure topics are distributed throughout the entire video.{time_info}
+
+        {genre_snippet}
         
         Extract the following:
         
@@ -450,7 +675,8 @@ class GeminiService:
         self,
         transcript_analysis: Dict[str, Any],
         frame_analyses: List[Dict[str, Any]],
-        duration: float
+        duration: float,
+        video_genre: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Synthesize transcript and frame analyses into final output with retry logic
@@ -474,11 +700,14 @@ class GeminiService:
             topics_preview = json.dumps(all_topics[:10])[:3000] if len(all_topics) > 10 else json.dumps(all_topics)[:3000]
             frames_preview = json.dumps(frame_analyses[:15])[:3000] if len(frame_analyses) > 15 else json.dumps(frame_analyses)[:3000]
             
+            genre_snippet = self._genre_snippet(video_genre, "synthesis")
             prompt = f"""
         You are synthesizing analysis of a {duration/60:.1f}-minute video (duration: {seconds_to_timestamp(duration)}).
         
         IMPORTANT: You must preserve ALL topics from the transcript analysis. Do not filter, remove, or skip any topics. 
         All topics should cover the full video duration from 00:00:00 to {seconds_to_timestamp(duration)}.
+
+        {genre_snippet}
         
         Transcript Topics ({len(all_topics)} total - preserve ALL of them):
         {topics_preview}
@@ -609,24 +838,53 @@ class GeminiService:
             # Extract JSON from markdown code block
             json_text = text
             
-            # Try multiple extraction patterns
+            # Try multiple extraction patterns - prioritize markdown code blocks
             patterns = [
-                (r'```json\s*(.*?)\s*```', re.DOTALL),
-                (r'```\s*(.*?)\s*```', re.DOTALL),
-                (r'\{.*\}', 0),  # Try to find first {...} block
-                (r'\[.*\]', 0),  # Try to find first [...] array
+                (r'```json\s*(.*?)\s*```', re.DOTALL),  # ```json ... ```
+                (r'```\s*(.*?)\s*```', re.DOTALL),  # ``` ... ```
+                (r'```\s*(.*?)\s*```', re.MULTILINE | re.DOTALL),  # Alternative markdown
             ]
             
+            json_text = None
             for pattern, flags in patterns:
                 try:
-                    match = re.search(pattern, text, flags) if flags else re.search(pattern, text)
+                    match = re.search(pattern, text, flags)
                     if match:
-                        json_text = match.group(1) if '(' in pattern else match.group(0)
+                        json_text = match.group(1).strip()
+                        print(f"Extracted JSON from markdown code block (pattern: {pattern[:20]}...)")
                         break
-                except:
+                except Exception as e:
                     continue
             
+            # If no markdown block found, try to find JSON object directly
+            if not json_text:
+                # Find first { ... } block
+                start = text.find('{')
+                if start >= 0:
+                    depth = 0
+                    for i, char in enumerate(text[start:], start):
+                        if char == '{':
+                            depth += 1
+                        elif char == '}':
+                            depth -= 1
+                            if depth == 0:
+                                json_text = text[start:i+1]
+                                print(f"Extracted JSON object directly")
+                                break
+            
             # Try cleaning and parsing
+            if json_text:
+                try:
+                    cleaned = clean_json(json_text)
+                    return json.loads(cleaned)
+                except json.JSONDecodeError as e:
+                    print(f"JSON parsing failed after extraction: {e}")
+                    # Fall through to last resort
+            else:
+                # No JSON found in markdown blocks, try direct extraction
+                json_text = text
+            
+            # Last resort: try to parse cleaned original text
             try:
                 cleaned = clean_json(json_text)
                 return json.loads(cleaned)

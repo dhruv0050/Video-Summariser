@@ -300,9 +300,24 @@ const Reports = () => {
                     }}>
                       {report.video_name || 'Untitled Video'}
                     </h3>
-                    <div style={{ fontSize: '12px', color: '#9ca3af' }}>
+                    <div style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '5px' }}>
                       ID: {report.job_id.substring(0, 12)}...
                     </div>
+                    {report.video_genre && report.video_genre !== 'unknown' && (
+                      <div style={{ marginTop: '5px' }}>
+                        <span style={{
+                          padding: '3px 10px',
+                          backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                          color: '#60a5fa',
+                          borderRadius: '10px',
+                          fontSize: '11px',
+                          fontWeight: '500',
+                          textTransform: 'capitalize'
+                        }}>
+                          🎬 {report.video_genre.replace(/_/g, ' ')}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
 

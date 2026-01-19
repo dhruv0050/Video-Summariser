@@ -336,6 +336,31 @@ const Landing = () => {
               <div className="pill">Summary</div>
               <div className="timestamp">Duration: {result.duration ? `${Math.round(result.duration / 60)} min` : '—'}</div>
             </div>
+            {result.video_genre && result.video_genre !== 'unknown' && (
+              <div style={{ 
+                marginBottom: '15px', 
+                display: 'flex', 
+                alignItems: 'center', 
+                gap: '8px' 
+              }}>
+                <span style={{
+                  padding: '4px 12px',
+                  backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                  color: '#60a5fa',
+                  borderRadius: '12px',
+                  fontSize: '12px',
+                  fontWeight: '500',
+                  textTransform: 'capitalize'
+                }}>
+                  🎬 {result.video_genre.replace(/_/g, ' ')}
+                </span>
+                {result.genre_confidence && (
+                  <span style={{ fontSize: '11px', color: '#9ca3af' }}>
+                    ({Math.round(result.genre_confidence * 100)}% confidence)
+                  </span>
+                )}
+              </div>
+            )}
             <h3>Executive Summary</h3>
             <p className="muted">{result.executive_summary || 'No summary yet.'}</p>
             {result.key_takeaways?.length > 0 && (

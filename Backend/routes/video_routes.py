@@ -183,7 +183,10 @@ async def get_job_results(job_id: str):
             entities=job.get("entities", {}),
             total_frames=job.get("total_frames", 0),
             processing_cost=job.get("processing_cost"),
-            completed_at=job.get("completed_at")
+            completed_at=job.get("completed_at"),
+            video_genre=job.get("video_genre"),
+            genre_confidence=job.get("genre_confidence"),
+            genre_reason=job.get("genre_reason")
         )
         
     except HTTPException:
@@ -330,7 +333,9 @@ async def get_reports(
                 youtube_url=job.get("youtube_url"),
                 youtube_video_id=job.get("youtube_video_id"),
                 drive_video_url=job.get("drive_video_url"),
-                drive_file_id=job.get("drive_file_id")
+                drive_file_id=job.get("drive_file_id"),
+                video_genre=job.get("video_genre"),
+                genre_confidence=job.get("genre_confidence"),
             ))
         
         return reports

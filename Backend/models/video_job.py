@@ -82,6 +82,11 @@ class VideoJob(BaseModel):
     executive_summary: Optional[str] = None
     key_takeaways: List[str] = []
     entities: Dict[str, List[str]] = {}
+
+    # Content classification (used to adapt prompting)
+    video_genre: Optional[str] = None  # e.g. "podcast_panel", "educational_lecture", "vlog", etc.
+    genre_confidence: Optional[float] = None
+    genre_reason: Optional[str] = None
     
     # Report/Synthesis (stored for easy retrieval)
     report: Dict[str, Any] = {}  # Full synthesis result
@@ -125,6 +130,9 @@ class VideoJobResult(BaseModel):
     total_frames: int = 0
     processing_cost: Optional[float] = None
     completed_at: Optional[datetime] = None
+    video_genre: Optional[str] = None
+    genre_confidence: Optional[float] = None
+    genre_reason: Optional[str] = None
     
     class Config:
         json_encoders = {ObjectId: str}
@@ -146,6 +154,8 @@ class ReportSummary(BaseModel):
     youtube_video_id: Optional[str] = None
     drive_video_url: Optional[str] = None
     drive_file_id: Optional[str] = None
+    video_genre: Optional[str] = None
+    genre_confidence: Optional[float] = None
     
     class Config:
         json_encoders = {ObjectId: str}

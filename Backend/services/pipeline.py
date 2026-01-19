@@ -98,10 +98,23 @@ class ProcessingPipeline:
                 last_seg_time = max(seg.end_time for seg in transcript)
                 print(f"Transcript covers: {self.ffmpeg.format_timestamp(first_seg_time)} to {self.ffmpeg.format_timestamp(last_seg_time)} (video duration: {self.ffmpeg.format_timestamp(duration)})")
                 print(f"Total transcript segments: {len(transcript)}, Total characters: {len(transcript_text)}")
+
+            # Step 4a: Classify video genre (to adapt downstream prompting)
+            genre_info = await gemini_service.classify_video_genre(transcript_text, duration)
+            video_genre = genre_info.get("genre", "unknown")
+            genre_confidence = genre_info.get("confidence", 0.0)
+            genre_reason = genre_info.get("reason", "")
+            print(f"Detected genre: {video_genre} (confidence={genre_confidence})")
+            await self._update_job(job_id, {
+                "video_genre": video_genre,
+                "genre_confidence": genre_confidence,
+                "genre_reason": genre_reason,
+            })
             
             transcript_analysis = await gemini_service.analyze_transcript(
                 transcript_text, 
-                duration
+                duration,
+                video_genre=video_genre
             )
             await self._update_job(job_id, {"progress": 0.6})
             
@@ -126,7 +139,8 @@ class ProcessingPipeline:
             synthesis = await gemini_service.synthesize_results(
                 transcript_analysis,
                 frame_analyses,
-                duration
+                duration,
+                video_genre=video_genre
             )
             
             # Step 8: Build final output
@@ -150,6 +164,8 @@ class ProcessingPipeline:
                 "key_takeaways": synthesis.get("key_takeaways", []),
                 "entities": synthesis.get("entities", {}),
                 "report": synthesis,  # Store full synthesis result
+                "video_genre": video_genre,
+                "genre_confidence": genre_confidence,
                 "completed_at": datetime.utcnow()
             })
             
