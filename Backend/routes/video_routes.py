@@ -1,18 +1,24 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, UploadFile, File, Form
+from fastapi.responses import FileResponse, StreamingResponse
 from bson import ObjectId
 from datetime import datetime
 from typing import List
+import os
+import shutil
+import json
 
 from models.database import db
 from models.video_job import (
     VideoJobCreate,
     YouTubeJobCreate,
+    UploadJobCreate,
     VideoJobResponse, 
     VideoJobResult,
     VideoJob,
     ReportSummary
 )
 from services.pipeline import pipeline
+import config
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
 
@@ -106,6 +112,76 @@ async def process_youtube_video(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create YouTube job: {str(e)}")
+
+
+@router.post("/process-upload", response_model=VideoJobResponse)
+async def process_uploaded_video(
+    file: UploadFile = File(...),
+    video_name: str = Form(None),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """
+    Start processing a video from direct file upload
+    
+    Args:
+        file: Uploaded video file
+        video_name: Optional video name
+        background_tasks: FastAPI background tasks
+    
+    Returns:
+        Job response with job_id and initial status
+    """
+    try:
+        # Validate file type
+        content_type = file.content_type or ""
+        if not any(ext in content_type for ext in ["video", "mp4", "mov", "avi", "mkv", "webm"]):
+            # Also check file extension
+            filename = file.filename or ""
+            if not any(filename.lower().endswith(ext) for ext in [".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v"]):
+                raise HTTPException(status_code=400, detail="Invalid file type. Please upload a video file.")
+        
+        # Create job in database first
+        database = db.get_db()
+        
+        job = VideoJob(
+            video_name=video_name or file.filename or "Uploaded Video",
+            video_source="upload",
+            status="pending",
+            progress=0.0
+        )
+        
+        # Insert into MongoDB
+        result = await database.video_jobs.insert_one(job.dict(by_alias=True))
+        job_id = str(result.inserted_id)
+        
+        # Save uploaded file to temp directory
+        video_path = os.path.join(config.TEMP_DIR, f"{job_id}_video{os.path.splitext(file.filename or '')[-1]}")
+        os.makedirs(config.TEMP_DIR, exist_ok=True)
+        
+        with open(video_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        # Update job with video path
+        await database.video_jobs.update_one(
+            {"_id": ObjectId(job_id)},
+            {"$set": {"uploaded_video_path": video_path}}
+        )
+        
+        # Start processing in background
+        background_tasks.add_task(pipeline.process_video, job_id)
+        
+        return VideoJobResponse(
+            job_id=job_id,
+            status="pending",
+            progress=0.0,
+            video_name=video_name or file.filename or "Uploaded Video",
+            created_at=datetime.utcnow()
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create upload job: {str(e)}")
 
 
 @router.get("/status/{job_id}", response_model=VideoJobResponse)
@@ -342,3 +418,125 @@ async def get_reports(
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get reports: {str(e)}")
+
+
+@router.get("/{job_id}/download/transcript")
+async def download_transcript(job_id: str, format: str = Query("json", regex="^(json|txt)$")):
+    """
+    Download transcript for a completed job
+    
+    Args:
+        job_id: Job ID
+        format: Output format - "json" or "txt"
+    
+    Returns:
+        Transcript file download
+    """
+    try:
+        database = db.get_db()
+        job = await database.video_jobs.find_one({"_id": ObjectId(job_id)})
+        
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        if job.get("status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job is not completed (status: {job.get('status')})"
+            )
+        
+        transcript = job.get("transcript", [])
+        if not transcript:
+            raise HTTPException(status_code=404, detail="Transcript not found for this job")
+        
+        if format == "json":
+            # Return as JSON
+            return StreamingResponse(
+                iter([json.dumps(transcript, indent=2)]),
+                media_type="application/json",
+                headers={
+                    "Content-Disposition": f'attachment; filename="transcript_{job_id}.json"'
+                }
+            )
+        else:
+            # Return as plain text with timestamps
+            lines = []
+            for seg in transcript:
+                start_ts = _format_timestamp(seg.get("start_time", 0))
+                end_ts = _format_timestamp(seg.get("end_time", 0))
+                speaker = seg.get("speaker", "")
+                text = seg.get("text", "")
+                
+                if speaker:
+                    lines.append(f"[{start_ts} - {end_ts}] {speaker}: {text}")
+                else:
+                    lines.append(f"[{start_ts} - {end_ts}] {text}")
+            
+            transcript_text = "\n".join(lines)
+            return StreamingResponse(
+                iter([transcript_text]),
+                media_type="text/plain",
+                headers={
+                    "Content-Disposition": f'attachment; filename="transcript_{job_id}.txt"'
+                }
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download transcript: {str(e)}")
+
+
+@router.get("/{job_id}/download/audio")
+async def download_audio(job_id: str):
+    """
+    Download audio file for a completed job
+    
+    Args:
+        job_id: Job ID
+    
+    Returns:
+        Audio file download
+    """
+    try:
+        database = db.get_db()
+        job = await database.video_jobs.find_one({"_id": ObjectId(job_id)})
+        
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        if job.get("status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Job is not completed (status: {job.get('status')})"
+            )
+        
+        # Check if audio path exists in job
+        audio_path = job.get("audio_path")
+        if not audio_path or not os.path.exists(audio_path):
+            # Try to construct path from job_id
+            audio_path = os.path.join(config.TEMP_DIR, f"{job_id}_audio.wav")
+            if not os.path.exists(audio_path):
+                raise HTTPException(status_code=404, detail="Audio file not found for this job")
+        
+        return FileResponse(
+            audio_path,
+            media_type="audio/wav",
+            filename=f"audio_{job_id}.wav",
+            headers={
+                "Content-Disposition": f'attachment; filename="audio_{job_id}.wav"'
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download audio: {str(e)}")
+
+
+def _format_timestamp(seconds: float) -> str:
+    """Format seconds to HH:MM:SS"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"

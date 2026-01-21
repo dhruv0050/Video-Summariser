@@ -38,10 +38,13 @@ class ProcessingPipeline:
             
             # Determine video source
             video_source = job.get("video_source", "drive")
-            if not video_source and job.get("youtube_url"):
-                video_source = "youtube"
-            elif not video_source and job.get("drive_video_url"):
-                video_source = "drive"
+            if not video_source:
+                if job.get("youtube_url"):
+                    video_source = "youtube"
+                elif job.get("uploaded_video_path"):
+                    video_source = "upload"
+                elif job.get("drive_video_url"):
+                    video_source = "drive"
             
             # Update status
             await self._update_job(job_id, {
@@ -182,7 +185,23 @@ class ProcessingPipeline:
             })
     
     async def _download_video(self, job: Dict, video_source: str = "drive") -> str:
-        """Download video from Google Drive or YouTube"""
+        """Download video from Google Drive, YouTube, or use uploaded file"""
+        
+        if video_source == "upload" or job.get("uploaded_video_path"):
+            # Use uploaded file
+            video_path = job.get("uploaded_video_path")
+            if not video_path or not os.path.exists(video_path):
+                raise Exception(f"Uploaded video file not found at {video_path}")
+            
+            # Update video name if not set
+            if not job.get("video_name"):
+                filename = os.path.basename(video_path)
+                await self._update_job(str(job["_id"]), {
+                    "video_name": filename
+                })
+            
+            return video_path
+        
         video_path = os.path.join(config.TEMP_DIR, f"{job['_id']}_video.mp4")
         
         if video_source == "youtube" or job.get("youtube_url"):
@@ -241,6 +260,12 @@ class ProcessingPipeline:
         """Extract audio from video"""
         audio_path = os.path.join(config.TEMP_DIR, f"{job_id}_audio.wav")
         self.ffmpeg.extract_audio(video_path, audio_path)
+        
+        # Store audio path in database for downloads
+        await self._update_job(job_id, {
+            "audio_path": audio_path
+        })
+        
         return audio_path
     
     async def _transcribe_audio(self, audio_path: str) -> list[TranscriptSegment]:
@@ -453,19 +478,27 @@ class ProcessingPipeline:
         return timestamp_to_seconds(ts)
     
     async def _cleanup(self, job_id: str):
-        """Clean up temporary files"""
-        patterns = [
-            f"{job_id}_video.mp4",
-            f"{job_id}_audio.wav"
-        ]
+        """Clean up temporary files (but keep audio for downloads)"""
+        # Don't delete audio file - keep it for downloads
+        # Only clean up video and frames
         
-        for pattern in patterns:
-            path = os.path.join(config.TEMP_DIR, pattern)
-            if os.path.exists(path):
-                try:
-                    os.remove(path)
-                except Exception as e:
-                    print(f"Error removing {path}: {e}")
+        # Get job to check video source
+        job = await self._get_job(job_id)
+        video_source = job.get("video_source", "drive")
+        
+        # Only delete video if it's not an uploaded file (uploaded files should be kept until manually deleted)
+        if video_source != "upload":
+            patterns = [f"{job_id}_video.mp4"]
+            for pattern in patterns:
+                path = os.path.join(config.TEMP_DIR, pattern)
+                if os.path.exists(path):
+                    try:
+                        os.remove(path)
+                    except Exception as e:
+                        print(f"Error removing {path}: {e}")
+        else:
+            # For uploaded files, keep the original video but could clean up later
+            print(f"Keeping uploaded video file for job {job_id}")
         
         # Remove frames directory
         frames_dir = os.path.join(config.TEMP_DIR, f"{job_id}_frames")

@@ -59,13 +59,18 @@ class YouTubeJobCreate(BaseModel):
     video_name: Optional[str] = None
 
 
+class UploadJobCreate(BaseModel):
+    video_name: Optional[str] = None
+
+
 class VideoJob(BaseModel):
     id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
     drive_video_url: Optional[str] = None  # For Google Drive videos
     youtube_url: Optional[str] = None  # For YouTube videos
-    video_source: str = "drive"  # "drive" or "youtube"
+    video_source: str = "drive"  # "drive", "youtube", or "upload"
     drive_file_id: Optional[str] = None
     youtube_video_id: Optional[str] = None  # YouTube video ID
+    uploaded_video_path: Optional[str] = None  # Path to uploaded video file
     video_name: Optional[str] = None
     status: str = "pending"  # pending, downloading, processing, completed, failed
     progress: float = 0.0
@@ -74,6 +79,7 @@ class VideoJob(BaseModel):
     # Storage paths
     drive_folder_id: Optional[str] = None
     audio_drive_id: Optional[str] = None
+    audio_path: Optional[str] = None  # Local path to audio file for downloads
     
     # Processing results
     transcript: List[TranscriptSegment] = []

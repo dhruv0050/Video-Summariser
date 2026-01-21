@@ -376,34 +376,98 @@ const Reports = () => {
                   )}
                 </div>
 
-                {/* CTA Button */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleViewReport(report.job_id);
-                  }}
-                  style={{
-                    padding: '10px',
-                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                    color: '#3b82f6',
-                    border: '1px solid #3b82f6',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: '13px',
-                    fontWeight: '500',
-                    transition: 'all 0.2s ease'
-                  }}
-                  onMouseOver={(e) => {
-                    e.target.style.backgroundColor = '#3b82f6';
-                    e.target.style.color = 'white';
-                  }}
-                  onMouseOut={(e) => {
-                    e.target.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
-                    e.target.style.color = 'black';
-                  }}
-                >
-                  View Report →
-                </button>
+                {/* Action Buttons */}
+                <div style={{ display: 'flex', gap: '10px', flexDirection: 'column' }}>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleViewReport(report.job_id);
+                    }}
+                    style={{
+                      padding: '10px',
+                      backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                      color: '#3b82f6',
+                      border: '1px solid #3b82f6',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      transition: 'all 0.2s ease'
+                    }}
+                    onMouseOver={(e) => {
+                      e.target.style.backgroundColor = '#3b82f6';
+                      e.target.style.color = 'white';
+                    }}
+                    onMouseOut={(e) => {
+                      e.target.style.backgroundColor = 'rgba(59, 130, 246, 0.1)';
+                      e.target.style.color = '#3b82f6';
+                    }}
+                  >
+                    View Report →
+                  </button>
+                  
+                  {/* Download Buttons */}
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(`${API_BASE}/api/videos/${report.job_id}/download/transcript?format=txt`, '_blank');
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        color: '#10b981',
+                        border: '1px solid #10b981',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: '500',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseOver={(e) => {
+                        e.target.style.backgroundColor = '#10b981';
+                        e.target.style.color = 'white';
+                      }}
+                      onMouseOut={(e) => {
+                        e.target.style.backgroundColor = 'rgba(16, 185, 129, 0.1)';
+                        e.target.style.color = '#10b981';
+                      }}
+                      title="Download Transcript"
+                    >
+                      📄 Transcript
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(`${API_BASE}/api/videos/${report.job_id}/download/audio`, '_blank');
+                      }}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        color: '#f59e0b',
+                        border: '1px solid #f59e0b',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        fontWeight: '500',
+                        transition: 'all 0.2s ease'
+                      }}
+                      onMouseOver={(e) => {
+                        e.target.style.backgroundColor = '#f59e0b';
+                        e.target.style.color = 'white';
+                      }}
+                      onMouseOut={(e) => {
+                        e.target.style.backgroundColor = 'rgba(245, 158, 11, 0.1)';
+                        e.target.style.color = '#f59e0b';
+                      }}
+                      title="Download Audio"
+                    >
+                      🎵 Audio
+                    </button>
+                  </div>
+                </div>
               </div>
             ))}
           </div>

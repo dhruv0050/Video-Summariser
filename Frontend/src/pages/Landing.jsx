@@ -15,7 +15,8 @@ const Landing = () => {
   const [error, setError] = useState('');
   const [polling, setPolling] = useState(false);
   const [viewingPastReport, setViewingPastReport] = useState(false);
-  const [videoSource, setVideoSource] = useState('auto'); // 'auto', 'drive', 'youtube'
+  const [videoSource, setVideoSource] = useState('auto'); // 'auto', 'drive', 'youtube', 'upload'
+  const [uploadedFile, setUploadedFile] = useState(null);
 
   // Detect video source from URL
   const detectVideoSource = (url) => {
@@ -28,7 +29,12 @@ const Landing = () => {
     return 'auto';
   };
 
-  const canSubmit = useMemo(() => videoUrl.trim().length > 0, [videoUrl]);
+  const canSubmit = useMemo(() => {
+    if (videoSource === 'upload') {
+      return uploadedFile !== null;
+    }
+    return videoUrl.trim().length > 0;
+  }, [videoUrl, videoSource, uploadedFile]);
 
   // Check if we're viewing a past report from URL params
   useEffect(() => {
@@ -59,6 +65,46 @@ const Landing = () => {
     setProgress(0);
     setJobId('');
 
+    // Handle file upload
+    if (videoSource === 'upload' || uploadedFile) {
+      if (!uploadedFile) {
+        setError('Please select a video file to upload');
+        setStatus('idle');
+        return;
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append('file', uploadedFile);
+        if (videoName.trim()) {
+          formData.append('video_name', videoName.trim());
+        }
+
+        const resp = await fetch(`${API_BASE}/api/videos/process-upload`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.detail || 'Failed to start processing');
+        }
+
+        const data = await resp.json();
+        setJobId(data.job_id);
+        setStatus(data.status || 'pending');
+        setProgress(data.progress || 0);
+        setPolling(true);
+        setUploadedFile(null); // Reset file input
+        return;
+      } catch (err) {
+        setError(err.message || 'Something went wrong');
+        setStatus('failed');
+        return;
+      }
+    }
+
+    // Handle URL-based processing
     const url = videoUrl.trim();
     const detectedSource = detectVideoSource(url);
     const source = videoSource === 'auto' ? detectedSource : videoSource;
@@ -189,10 +235,9 @@ const Landing = () => {
     <div className="page">
       <header className="hero">
         <div>
-          <p className="eyebrow">Gemini + Google Drive & YouTube</p>
           <h1>Video Summarizer</h1>
           <p className="muted">
-            Paste a Google Drive or YouTube video link, kick off processing, and see transcript + key frames + insights.
+            Upload a video file, or paste a Google Drive or YouTube video link, kick off processing, and see transcript + key frames + insights.
           </p>
         </div>
         <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
@@ -259,26 +304,92 @@ const Landing = () => {
       {!viewingPastReport && (
       <form className="card form" onSubmit={handleSubmit}>
         <div className="field">
-          <label>Video URL (Google Drive or YouTube)</label>
-          <input
-            type="url"
-            placeholder="https://drive.google.com/file/d/FILE_ID/view or https://youtube.com/watch?v=VIDEO_ID"
-            value={videoUrl}
+          <label>Video Source</label>
+          <select
+            value={videoSource}
             onChange={(e) => {
-              setVideoUrl(e.target.value);
-              const detected = detectVideoSource(e.target.value);
-              if (detected !== 'auto' && videoSource === 'auto') {
-                setVideoSource(detected);
+              setVideoSource(e.target.value);
+              if (e.target.value !== 'upload') {
+                setUploadedFile(null);
+              }
+              if (e.target.value === 'upload') {
+                setVideoUrl('');
               }
             }}
-            required
-          />
-          <div style={{ marginTop: '8px', fontSize: '12px', color: '#9ca3af' }}>
-            {videoUrl && detectVideoSource(videoUrl) === 'youtube' && '✓ YouTube URL detected'}
-            {videoUrl && detectVideoSource(videoUrl) === 'drive' && '✓ Google Drive URL detected'}
-            {videoUrl && detectVideoSource(videoUrl) === 'auto' && '⚠️ Please enter a valid Drive or YouTube URL'}
-          </div>
+            style={{
+              padding: '12px',
+              backgroundColor: 'rgba(255,255,255,0.05)',
+              color: 'grey',
+              border: '1px solid rgba(255,255,255,0.2)',
+              borderRadius: '8px',
+              fontSize: '14px',
+              width: '100%',
+              marginBottom: '15px'
+            }}
+          >
+            <option value="auto">Auto-detect from URL</option>
+            <option value="upload">Upload Video File</option>
+            <option value="drive">Google Drive</option>
+            <option value="youtube">YouTube</option>
+          </select>
         </div>
+
+        {videoSource === 'upload' ? (
+          <div className="field">
+            <label>Upload Video File</label>
+            <input
+              type="file"
+              accept="video/*"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  setUploadedFile(file);
+                  if (!videoName.trim()) {
+                    setVideoName(file.name.replace(/\.[^/.]+$/, ''));
+                  }
+                }
+              }}
+              required
+              style={{
+                padding: '12px',
+                backgroundColor: 'rgba(255,255,255,0.05)',
+                color: 'white',
+                border: '1px solid rgba(255,255,255,0.2)',
+                borderRadius: '8px',
+                fontSize: '14px',
+                width: '100%',
+                cursor: 'pointer'
+              }}
+            />
+            {uploadedFile && (
+              <div style={{ marginTop: '8px', fontSize: '12px', color: '#10b981' }}>
+                ✓ Selected: {uploadedFile.name} ({(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB)
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="field">
+            <label>Video URL (Google Drive or YouTube)</label>
+            <input
+              type="url"
+              placeholder="https://drive.google.com/file/d/FILE_ID/view or https://youtube.com/watch?v=VIDEO_ID"
+              value={videoUrl}
+              onChange={(e) => {
+                setVideoUrl(e.target.value);
+                const detected = detectVideoSource(e.target.value);
+                if (detected !== 'auto' && videoSource === 'auto') {
+                  setVideoSource(detected);
+                }
+              }}
+              required={videoSource !== 'upload'}
+            />
+            <div style={{ marginTop: '8px', fontSize: '12px', color: '#9ca3af' }}>
+              {videoUrl && detectVideoSource(videoUrl) === 'youtube' && '✓ YouTube URL detected'}
+              {videoUrl && detectVideoSource(videoUrl) === 'drive' && '✓ Google Drive URL detected'}
+              {videoUrl && detectVideoSource(videoUrl) === 'auto' && videoSource !== 'upload' && '⚠️ Please enter a valid Drive or YouTube URL'}
+            </div>
+          </div>
+        )}
 
         <div className="field">
           <label>Video Name (optional)</label>
@@ -290,29 +401,15 @@ const Landing = () => {
           />
         </div>
 
-        <div className="field">
-          <label>Video Source (auto-detected from URL)</label>
-          <select
-            value={videoSource}
-            onChange={(e) => setVideoSource(e.target.value)}
-            style={{
-              padding: '12px',
-              backgroundColor: 'rgba(255,255,255,0.05)',
-              color: 'white',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '8px',
-              fontSize: '14px',
-              width: '100%'
-            }}
-          >
-            <option value="auto">Auto-detect</option>
-            <option value="drive">Google Drive</option>
-            <option value="youtube">YouTube</option>
-          </select>
-        </div>
-
         <div className="actions">
-          <button type="submit" disabled={!canSubmit || status === 'pending' || polling}>
+          <button 
+            type="submit" 
+            disabled={
+              (videoSource === 'upload' ? !uploadedFile : !videoUrl.trim()) || 
+              status === 'pending' || 
+              polling
+            }
+          >
             {status === 'pending' || polling ? 'Processing…' : 'Start Processing'}
           </button>
           {jobId && !viewingPastReport && <span className="muted">Job ID: {jobId}</span>}
