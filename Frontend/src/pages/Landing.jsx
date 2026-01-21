@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import VideoChatBot from '../components/VideoChatBot';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
@@ -487,6 +488,14 @@ const Landing = () => {
             {renderTopics()}
           </div>
         </section>
+      )}
+
+      {/* Video Chatbot - only show when results are available */}
+      {result && jobId && result.status === 'completed' && (
+        <VideoChatBot 
+          jobId={jobId} 
+          videoName={result.video_name || videoName || 'this video'} 
+        />
       )}
     </div>
   );

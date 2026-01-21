@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 from bson import ObjectId
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 import os
 import shutil
 import json
@@ -18,6 +19,7 @@ from models.video_job import (
     ReportSummary
 )
 from services.pipeline import pipeline
+from services.gemini_service import GeminiService
 import config
 
 router = APIRouter(prefix="/api/videos", tags=["videos"])
@@ -540,3 +542,146 @@ def _format_timestamp(seconds: float) -> str:
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+class ChatRequest(BaseModel):
+    question: str
+    conversation_history: List[Dict[str, str]] = []
+
+
+@router.post("/chat/{job_id}")
+async def chat_with_video(job_id: str, chat_request: ChatRequest):
+    """
+    Chat with a video using Gemini AI based on its transcript and report
+    
+    Args:
+        job_id: Job ID of the video to chat about
+        chat_request: Chat request with question and conversation history
+    
+    Returns:
+        AI-generated response based on video context
+    """
+    try:
+        database = db.get_db()
+        
+        # Fetch job from database
+        job = await database.video_jobs.find_one({"_id": ObjectId(job_id)})
+        
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        if job.get("status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Video is still processing. Current status: {job.get('status')}"
+            )
+        
+        # Prepare context from transcript and report
+        transcript_text = ""
+        if job.get("transcript"):
+            transcript_segments = []
+            for segment in job["transcript"]:
+                timestamp = _format_timestamp(segment.get("start_time", 0))
+                text = segment.get("text", "")
+                speaker = segment.get("speaker", "")
+                speaker_prefix = f"{speaker}: " if speaker else ""
+                transcript_segments.append(f"[{timestamp}] {speaker_prefix}{text}")
+            transcript_text = "\n".join(transcript_segments)
+        
+        # Extract key information from the job
+        executive_summary = job.get("executive_summary", "")
+        key_takeaways = job.get("key_takeaways", [])
+        topics = job.get("topics", [])
+        video_name = job.get("video_name", "this video")
+        video_genre = job.get("video_genre", "")
+        
+        # Build topics summary
+        topics_summary = ""
+        if topics:
+            topics_list = []
+            for topic in topics:
+                title = topic.get("title", "")
+                timestamp_range = topic.get("timestamp_range", [])
+                summary = topic.get("summary", "")
+                key_points = topic.get("key_points", [])
+                
+                topic_str = f"**{title}**"
+                if timestamp_range and len(timestamp_range) >= 2:
+                    topic_str += f" ({timestamp_range[0]} - {timestamp_range[1]})"
+                if summary:
+                    topic_str += f"\n  Summary: {summary}"
+                if key_points:
+                    topic_str += "\n  Key Points:\n" + "\n".join([f"    - {kp}" for kp in key_points])
+                topics_list.append(topic_str)
+            topics_summary = "\n\n".join(topics_list)
+        
+        # Build the context prompt
+        context = f"""You are a Video Insights Assistant helping users understand and analyze the video titled "{video_name}".
+
+VIDEO OVERVIEW:
+Genre: {video_genre}
+Executive Summary: {executive_summary}
+
+KEY TAKEAWAYS:
+{chr(10).join([f"- {kt}" for kt in key_takeaways]) if key_takeaways else "Not available"}
+
+TOPICS COVERED:
+{topics_summary if topics_summary else "Not available"}
+
+FULL TRANSCRIPT:
+{transcript_text if transcript_text else "Transcript not available"}
+
+Your role is to:
+1. Answer questions about the video content, topics, and key points discussed
+2. Provide specific quotes and timestamps when relevant
+3. Deep dive into topics when asked
+4. Help users discover insights from the video content
+5. Be conversational and helpful
+6. Reference the transcript to provide accurate information
+
+When answering:
+- Reference specific parts of the transcript with timestamps when applicable
+- Cite the executive summary and key takeaways when relevant
+- Be concise but thorough
+- If you don't find the answer in the context, say so honestly"""
+
+        # Build conversation history
+        conversation = []
+        if chat_request.conversation_history:
+            for msg in chat_request.conversation_history[-5:]:  # Keep last 5 messages for context
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "user":
+                    conversation.append(f"User: {content}")
+                else:
+                    conversation.append(f"Assistant: {content}")
+        
+        conversation_context = "\n".join(conversation) if conversation else ""
+        
+        # Prepare the prompt for Gemini
+        prompt = f"""{context}
+
+{"PREVIOUS CONVERSATION:" if conversation_context else ""}
+{conversation_context}
+
+USER QUESTION:
+{chat_request.question}
+
+Please provide a helpful, accurate response based on the video content above. Include relevant timestamps and quotes when applicable."""
+
+        # Use Gemini to generate response
+        gemini_service = GeminiService()
+        response = gemini_service.text_model.generate_content(prompt)
+        
+        return {
+            "response": response.text,
+            "job_id": job_id,
+            "video_name": video_name
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Chat error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to process chat request: {str(e)}")
+
