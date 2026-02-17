@@ -10,6 +10,7 @@ from services.drive_service import drive_service
 from services.youtube_service import youtube_service
 from services.gemini_service import gemini_service
 from utils.ffmpeg_utils import FFmpegUtils
+from utils.roi_utils import merge_time_windows
 import config
 
 
@@ -159,15 +160,62 @@ class ProcessingPipeline:
             
             print(f"Gatekeeper: Kept {len(useful_frames)}/{len(raw_frames)} frames")
             
+            # NEW: Phase 2 - ROI Fusion & Dense Sampling
+            print("Merging ROIs for Phase 2 processing...")
+            processing_windows = merge_time_windows(
+                audio_cues, 
+                visual_rois, 
+                duration,
+                buffer_seconds=5.0, # 5s buffer around events
+                min_gap=5.0 # Merge if gaps < 5s
+            )
+            print(f"Identified {len(processing_windows)} processing windows for dense sampling.")
+            
+            # Extract high-frequency frames only in these windows
+            frames_dir = os.path.join(config.TEMP_DIR, f"{job_id}_frames")
+            dense_frames = []
+            
+            if processing_windows:
+                dense_frames = self.ffmpeg.extract_dense_frames(
+                    video_path,
+                    frames_dir,
+                    processing_windows,
+                    fps=1
+                )
+                print(f"Extracted {len(dense_frames)} additional dense frames.")
+
             await self._update_job(job_id, {
                 "visual_rois": visual_rois,
                 "total_frames_extracted": len(raw_frames),
                 "useful_frames_count": len(useful_frames),
+                "processing_windows": processing_windows,
+                "dense_frames_count": len(dense_frames),
                 "progress": 0.7
             })
             
-            # Continue pipeline with only filtered frames
-            frames = useful_frames
+            # Combine useful coarse frames with dense frames
+            # Use a dictionary to de-duplicate by timestamp (rounded to nearest second)
+            combined_frames_map = {}
+            
+            # Add coarse frames first
+            for path, ts in useful_frames:
+                combined_frames_map[int(ts)] = (path, ts)
+                
+            # Add/Overwrite with dense frames (prefer dense as they are fresher?)
+            # Actually, both are fine, but dense frames are 1fps in active regions.
+            for path, ts in dense_frames:
+                combined_frames_map[int(ts)] = (path, ts)
+            
+            # Sorted list of unique frames
+            frames = sorted(combined_frames_map.values(), key=lambda x: x[1])
+            print(f"Total unique frames for analysis: {len(frames)}")
+            
+            # Limit total frames to avoid blowing up costs/time if video is huge
+            # MAX_ANALYSIS_FRAMES = 150 (configurable?)
+            if len(frames) > config.MAX_ANALYSIS_FRAMES:
+                print(f"Limiting frames from {len(frames)} to {config.MAX_ANALYSIS_FRAMES}")
+                step = len(frames) / config.MAX_ANALYSIS_FRAMES
+                frames = [frames[int(i * step)] for i in range(config.MAX_ANALYSIS_FRAMES)]
             
             # Step 6: Analyze frames
             await self._update_job(job_id, {"progress": 0.75})

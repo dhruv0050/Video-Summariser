@@ -24,6 +24,7 @@ MAX_AUDIO_CHUNK_DURATION = 300  # 5 minutes in seconds
 AUDIO_OVERLAP_DURATION = 30  # 30 seconds overlap
 KEYFRAME_INTERVAL = 60  # Extract keyframe every 60 seconds
 MAX_FRAMES_PER_VIDEO = 120  # Maximum frames to extract
+MAX_ANALYSIS_FRAMES = 150 # Max frames to send to Gemini for deep analysis (Phase 2)
 AUDIO_SAMPLE_RATE = 16000  # 16kHz for transcription
 
 # YouTube Configuration (optional)
