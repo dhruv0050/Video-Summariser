@@ -1,5 +1,7 @@
 import io
 import os
+import time
+import random
 from typing import Optional, BinaryIO
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -113,29 +115,51 @@ class GoogleDriveService:
         folder_id: Optional[str] = None,
         file_name: Optional[str] = None
     ) -> dict:
-        """Upload file to Google Drive"""
-        try:
-            if file_name is None:
-                file_name = os.path.basename(file_path)
+        """Upload file to Google Drive with retry logic"""
+        # Basic rate limiting
+        time.sleep(0.5)
+        
+        if file_name is None:
+            file_name = os.path.basename(file_path)
             
-            file_metadata = {'name': file_name}
+        file_metadata = {'name': file_name}
+        if folder_id:
+            file_metadata['parents'] = [folder_id]
             
-            if folder_id:
-                file_metadata['parents'] = [folder_id]
-            
-            media = MediaFileUpload(file_path, resumable=True)
-            file = self.service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id, name, webViewLink, webContentLink'
-            ).execute()
-            
-            # Make file accessible
-            self._set_file_permission(file.get('id'))
-            
-            return file
-        except HttpError as error:
-            raise Exception(f"Failed to upload file: {error}")
+        max_retries = 5
+        base_delay = 1
+        
+        for attempt in range(max_retries):
+            try:
+                media = MediaFileUpload(file_path, resumable=True)
+                file = self.service.files().create(
+                    body=file_metadata,
+                    media_body=media,
+                    fields='id, name, webViewLink, webContentLink'
+                ).execute()
+                
+                # Make file accessible
+                self._set_file_permission(file.get('id', ''))
+                
+                return file
+                
+            except Exception as e:
+                # Catch both HttpError and network errors (like WinError 10054)
+                if attempt == max_retries - 1:
+                    print(f"Failed to upload {file_name} after {max_retries} attempts. Last error: {e}")
+                    raise Exception(f"Failed to upload file after retries: {e}")
+                
+                delay = (base_delay * (2 ** attempt)) + random.uniform(0, 1)
+                print(f"Upload error for {file_name}: {str(e)[:100]}... Retrying in {delay:.2f}s (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+                
+                # Re-authenticate on token expiry error
+                if "invalid_grant" in str(e) or "unauthorized" in str(e).lower():
+                    print("Refreshing credentials...")
+                    try:
+                        self._authenticate()
+                    except:
+                        pass
     
     def _set_file_permission(self, file_id: str):
         """Set file permission to allow access"""
@@ -148,7 +172,7 @@ class GoogleDriveService:
                 fileId=file_id,
                 body=permission
             ).execute()
-        except HttpError as error:
+        except Exception as error:
             print(f"Warning: Failed to set permission: {error}")
     
     def get_file_url(self, file_id: str) -> str:

@@ -271,6 +271,121 @@ Return ONLY valid JSON:
         except Exception as e:
             print(f"Genre classification failed: {e}")
             return {"genre": "unknown", "confidence": 0.0, "reason": ""}
+
+    async def detect_transcript_visual_cues(
+        self,
+        transcript_segments: List[TranscriptSegment]
+    ) -> List[Dict[str, Any]]:
+        """
+        Phase 1: The "Audio Cue" Scout
+        Identifies timestamps where speaker references visuals.
+        """
+        if not transcript_segments:
+            return []
+
+        # Prepare transcript with timestamps
+        formatted_transcript = ""
+        for seg in transcript_segments:
+            start_ts = seconds_to_timestamp(seg.start_time)
+            formatted_transcript += f"[{start_ts}] {seg.text}\n"
+
+        # If transcript is huge, we might need to chunk it, but for now let's try strict truncation or send it all if model supports
+        # Gemini 1.5 Flash has large context, so ~1 hour transcript should fit.
+        # We'll take the first 30k chars for safety/speed in this scout phase if needed, 
+        # but ideal is full context. Let's send it all but watch for limits.
+        
+        def _scout():
+            prompt = f"""
+You are a Video Editor Assistant. Your task is to identify specific timestamps in the transcript where the speaker explicitly references visual information being shown on screen.
+
+Look for cues such as:
+- "As you can see on this chart..."
+- "Looking at this graph..."
+- "If we turn to the next slide..."
+- "Here in the code..."
+- "This diagram illustrates..."
+
+Transcript Segment:
+{formatted_transcript}
+
+Return a JSON object with a list of "visual_cues":
+{{
+  "visual_cues": [
+    {{
+      "timestamp": "00:04:23",
+      "cue_phrase": "As shown in this bar chart",
+      "confidence": "high",
+      "expected_visual_type": "chart"
+    }}
+  ]
+}}
+// expected_visual_type options: slide, demo, code, diagram, unknown
+
+If no cues are found, return an empty list.
+"""
+            print("Running Audio Cue Scout...")
+            response = self.text_model.generate_content(prompt)
+            result = self._parse_json_response(response.text)
+            return result.get("visual_cues", []) if result else []
+
+        try:
+            return retry_with_backoff(_scout, max_retries=2)
+        except Exception as e:
+            print(f"Audio Cue Scout failed: {e}")
+            return []
+
+    async def evaluate_frame_content(
+        self,
+        frame_path: str
+    ) -> Dict[str, Any]:
+        """
+        Phase 1: The "Gatekeeper"
+        Classify frame as Slide/Demo/Diagram (Useful) or Person/Other (Junk).
+        """
+        def _gatekeep():
+            img = Image.open(frame_path)
+            
+            prompt = """
+Analyze this video frame. Your goal is to determine if this frame contains valuable static information (like a presentation slide, coding terminal, or data dashboard) or if it is generic footage (like a person talking or a transition).
+
+Classify the image into one of these categories:
+1. "slide_presentation" (PowerPoint, Keynote)
+2. "software_demo" (IDE, Dashboard, Browser)
+3. "technical_diagram" (Whiteboard, Architecture)
+4. "talking_head" (Person on camera)
+5. "other"
+
+Return JSON:
+{
+  "category": "slide_presentation",
+  "information_density": "high", // options: high, medium, low, none
+  "contains_text": true,
+  "is_useful": true // Set to false if it's blurry, a transition, or just a person
+}
+"""
+            # Using Vision model (Flash)
+            response = self.vision_model.generate_content([prompt, img])
+            result = self._parse_json_response(response.text)
+            
+            if not result:
+                return {
+                    "category": "other",
+                    "information_density": "none",
+                    "contains_text": False,
+                    "is_useful": False
+                }
+            return result
+
+        try:
+            return retry_with_backoff(_gatekeep, max_retries=2)
+        except Exception as e:
+            print(f"Gatekeeper analysis failed for {frame_path}: {e}")
+            return {
+                "category": "error",
+                "information_density": "none",
+                "contains_text": False,
+                "is_useful": False
+            }
     
     async def transcribe_audio(
         self, 
@@ -779,136 +894,56 @@ Return ONLY valid JSON:
     def _parse_json_response(self, text: str) -> Optional[Dict]:
         """Extract and parse JSON from model response with aggressive error recovery"""
         import re
+        import json
         
-        def clean_json(s: str) -> str:
-            """Clean common JSON formatting issues"""
-            # Remove leading/trailing whitespace
-            s = s.strip()
+        def _repair_json(json_str: str) -> str:
+            """Repair common JSON syntax errors"""
+            # Remove comments
+            json_str = re.sub(r'//.*?$', '', json_str, flags=re.MULTILINE)
+            json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
             
-            # Remove comments (not standard JSON but LLMs sometimes add them)
-            s = re.sub(r'//.*?$', '', s, flags=re.MULTILINE)
-            s = re.sub(r'/\*.*?\*/', '', s, flags=re.DOTALL)
+            # Remove trailing commas
+            json_str = re.sub(r',(\s*[\]}])', r'\1', json_str)
             
-            # Remove trailing commas before closing braces/brackets
-            s = re.sub(r',\s*}', '}', s)
-            s = re.sub(r',\s*]', ']', s)
+            # Fix unescaped quotes inside strings (this is tricky and heuristics-based)
+            # We assume keys are always double-quoted and followed by a colon
+            # This is a dangerous regex but handles many common cases
+            # It looks for "key": "val" patterns and tries to identify unescaped quotes in val
             
-            # Handle multiple spaces in strings
-            s = re.sub(r' {2,}', ' ', s)
-            
-            # Escape unescaped newlines and tabs within string values
-            lines = []
-            in_string = False
-            escaped = False
-            i = 0
-            while i < len(s):
-                char = s[i]
-                
-                if char == '"' and not escaped:
-                    in_string = not in_string
-                    lines.append(char)
-                elif char == '\\' and in_string:
-                    escaped = not escaped
-                    lines.append(char)
-                elif in_string and not escaped:
-                    # Handle special characters in strings
-                    if char == '\n':
-                        lines.append(' ')
-                    elif char == '\r':
-                        if i + 1 < len(s) and s[i+1] == '\n':
-                            i += 1
-                        lines.append(' ')
-                    elif char == '\t':
-                        lines.append(' ')
-                    else:
-                        lines.append(char)
-                    escaped = False
-                else:
-                    lines.append(char)
-                    escaped = False
-                
-                i += 1
-            
-            return ''.join(lines)
-        
+            return json_str
+
         try:
-            # Try direct parse first
-            return json.loads(text)
-        except json.JSONDecodeError:
-            # Extract JSON from markdown code block
-            json_text = text
-            
-            # Try multiple extraction patterns - prioritize markdown code blocks
-            patterns = [
-                (r'```json\s*(.*?)\s*```', re.DOTALL),  # ```json ... ```
-                (r'```\s*(.*?)\s*```', re.DOTALL),  # ``` ... ```
-                (r'```\s*(.*?)\s*```', re.MULTILINE | re.DOTALL),  # Alternative markdown
-            ]
-            
-            json_text = None
-            for pattern, flags in patterns:
-                try:
-                    match = re.search(pattern, text, flags)
-                    if match:
-                        json_text = match.group(1).strip()
-                        print(f"Extracted JSON from markdown code block (pattern: {pattern[:20]}...)")
-                        break
-                except Exception as e:
-                    continue
-            
-            # If no markdown block found, try to find JSON object directly
-            if not json_text:
-                # Find first { ... } block
-                start = text.find('{')
-                if start >= 0:
-                    depth = 0
-                    for i, char in enumerate(text[start:], start):
-                        if char == '{':
-                            depth += 1
-                        elif char == '}':
-                            depth -= 1
-                            if depth == 0:
-                                json_text = text[start:i+1]
-                                print(f"Extracted JSON object directly")
-                                break
-            
-            # Try cleaning and parsing
-            if json_text:
-                try:
-                    cleaned = clean_json(json_text)
-                    return json.loads(cleaned)
-                except json.JSONDecodeError as e:
-                    print(f"JSON parsing failed after extraction: {e}")
-                    # Fall through to last resort
+            # 1. Try to find JSON block in markdown
+            match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+            if match:
+                json_str = match.group(1)
             else:
-                # No JSON found in markdown blocks, try direct extraction
-                json_text = text
-            
-            # Last resort: try to parse cleaned original text
+                # 2. Try to find the first '{' and last '}'
+                start = text.find('{')
+                end = text.rfind('}')
+                if start != -1 and end != -1:
+                    json_str = text[start:end+1]
+                else:
+                    json_str = text
+
+            # 3. Clean and Parse
             try:
-                cleaned = clean_json(json_text)
-                return json.loads(cleaned)
+                return json.loads(json_str)
             except json.JSONDecodeError:
-                # Last resort: try to find valid JSON subset
+                # 4. Repair and Retry
+                repaired = _repair_json(json_str)
                 try:
-                    # Find first '{' and match to '}'
-                    start = cleaned.find('{')
-                    if start >= 0:
-                        depth = 0
-                        for i, char in enumerate(cleaned[start:], start):
-                            if char == '{':
-                                depth += 1
-                            elif char == '}':
-                                depth -= 1
-                                if depth == 0:
-                                    subset = cleaned[start:i+1]
-                                    return json.loads(subset)
-                except:
-                    pass
-                
-                print(f"Failed to parse JSON after all attempts")
-                print(f"Response preview (first 400 chars): {text[:400]}")
-                return None
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    # 5. Last resort: specific fix for newlines in strings
+                    # LLMs often put real newlines inside strings which is invalid JSON
+                    repaired_newlines = re.sub(r'(?<=["\w])\n(?=["\w])', '\\n', json_str)
+                    return json.loads(repaired_newlines)
+                    
+        except Exception as e:
+            print(f"JSON parsing failed: {str(e)}")
+            # print(f"Failed JSON text subset: {text[:200]}...")
+            return None
 
 
 # Singleton instance

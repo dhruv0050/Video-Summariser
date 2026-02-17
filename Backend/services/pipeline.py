@@ -80,6 +80,12 @@ class ProcessingPipeline:
                 "progress": 0.5
             })
             
+            # NEW: Phase 1 - Audio Cue Scout
+            print("Running Audio Cue Scout...")
+            audio_cues = await gemini_service.detect_transcript_visual_cues(transcript)
+            print(f"Detected {len(audio_cues)} audio cues")
+            await self._update_job(job_id, {"audio_visual_cues": audio_cues})
+            
             # Step 4: Analyze transcript
             await self._update_job(job_id, {
                 "status": "analyzing",
@@ -123,11 +129,45 @@ class ProcessingPipeline:
             
             # Step 5: Extract frames
             await self._update_job(job_id, {"progress": 0.65})
-            frames = await self._extract_frames(video_path, job_id, transcript_analysis)
+            # Phase 1: Coarse Visual Sampling (every 30s)
+            raw_frames = await self._extract_frames(video_path, job_id, transcript_analysis, interval=30)
+            
+            # NEW: Phase 1 - Visual Gatekeeper
+            print(f"Running Visual Gatekeeper on {len(raw_frames)} frames...")
+            useful_frames = []
+            visual_rois = []
+            
+            for i, (frame_path, timestamp) in enumerate(raw_frames):
+                # Analyze frame content
+                evaluation = await gemini_service.evaluate_frame_content(frame_path)
+                
+                is_useful = evaluation.get("is_useful", False)
+                category = evaluation.get("category", "unknown")
+                
+                visual_rois.append({
+                    "timestamp": timestamp,
+                    "timestamp_str": self.ffmpeg.format_timestamp(timestamp),
+                    "frame_path": frame_path,
+                    "evaluation": evaluation
+                })
+                
+                if is_useful:
+                    useful_frames.append((frame_path, timestamp))
+                    print(f"  Frame {i} at {timestamp}s: KEPT ({category})")
+                else:
+                    print(f"  Frame {i} at {timestamp}s: DROPPED ({category})")
+            
+            print(f"Gatekeeper: Kept {len(useful_frames)}/{len(raw_frames)} frames")
+            
             await self._update_job(job_id, {
-                "total_frames": len(frames),
+                "visual_rois": visual_rois,
+                "total_frames_extracted": len(raw_frames),
+                "useful_frames_count": len(useful_frames),
                 "progress": 0.7
             })
+            
+            # Continue pipeline with only filtered frames
+            frames = useful_frames
             
             # Step 6: Analyze frames
             await self._update_job(job_id, {"progress": 0.75})
@@ -351,7 +391,8 @@ class ProcessingPipeline:
         self,
         video_path: str,
         job_id: str,
-        transcript_analysis: Dict
+        transcript_analysis: Dict,
+        interval: int = config.KEYFRAME_INTERVAL
     ) -> list[tuple[str, float]]:
         """Extract keyframes from video"""
         frames_dir = os.path.join(config.TEMP_DIR, f"{job_id}_frames")
@@ -360,7 +401,7 @@ class ProcessingPipeline:
         frames = self.ffmpeg.extract_keyframes(
             video_path,
             frames_dir,
-            interval=config.KEYFRAME_INTERVAL
+            interval=interval
         )
         
         # TODO: In Phase 2, add smart frame selection based on visual_cues
