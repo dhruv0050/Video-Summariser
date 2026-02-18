@@ -209,24 +209,88 @@ const Landing = () => {
             ))}
           </ul>
         )}
-        {topic.frames?.length > 0 && (
+
+        {/* Phase 4: Visual Sub-topics (Priority) */}
+        {topic.sub_topics?.length > 0 ? (
           <div className="frames-grid">
-            {topic.frames.slice(0, 4).map((f, i) => (
+            {topic.sub_topics.map((sub, i) => (
               <a
                 className="frame-thumb"
-                href={f.drive_url}
+                href={sub.image_url}
                 target="_blank"
                 rel="noreferrer"
                 key={i}
+                style={{ 
+                  textDecoration: 'none', 
+                  padding: 0, 
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column'
+                }}
               >
-                <div className="frame-meta">
-                  <span>{f.timestamp}</span>
-                  <span className="pill pill-ghost">{f.type || 'frame'}</span>
+                {/* Thumbnail Image */}
+                {sub.image_url ? (
+                  <div style={{
+                    width: '100%',
+                    height: '120px',
+                    backgroundImage: `url(${sub.image_url})`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    borderBottom: '1px solid rgba(255,255,255,0.06)'
+                  }} />
+                ) : (
+                   <div style={{ 
+                     height: '120px', 
+                     background: 'linear-gradient(45deg, #1f2937, #111827)', 
+                     display: 'flex', 
+                     alignItems: 'center', 
+                     justifyContent: 'center',
+                     color: '#374151',
+                     fontSize: '24px'
+                   }}>
+                     🖼️
+                   </div>
+                )}
+                
+                <div style={{ padding: '12px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                  <div className="frame-meta" style={{ marginBottom: '6px' }}>
+                    <span className="pill pill-ghost" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                      {sub.timestamp}
+                    </span>
+                  </div>
+                  <div className="frame-desc" style={{ padding: 0, marginTop: 0, fontSize: '13px', lineHeight: '1.4' }}>
+                    {sub.title}
+                  </div>
+                  {sub.visual_summary && (
+                     <div style={{ marginTop: '6px', fontSize: '11px', color: '#9ca3af', lineHeight: '1.3' }}>
+                       {sub.visual_summary.length > 80 ? sub.visual_summary.substring(0, 80) + '...' : sub.visual_summary}
+                     </div>
+                  )}
                 </div>
-                <div className="frame-desc">{f.description || 'Frame'}</div>
               </a>
             ))}
           </div>
+        ) : (
+          /* Fallback to legacy frames */
+          topic.frames?.length > 0 && (
+            <div className="frames-grid">
+              {topic.frames.slice(0, 4).map((f, i) => (
+                <a
+                  className="frame-thumb"
+                  href={f.drive_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  key={i}
+                >
+                  <div className="frame-meta">
+                    <span>{f.timestamp}</span>
+                    <span className="pill pill-ghost">{f.type || 'frame'}</span>
+                  </div>
+                  <div className="frame-desc">{f.description || 'Frame'}</div>
+                </a>
+              ))}
+            </div>
+          )
         )}
       </div>
     ));

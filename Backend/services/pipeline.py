@@ -259,7 +259,9 @@ class ProcessingPipeline:
                             folder_id=folder_id,
                             file_name=f"hero_{i:02d}_{int(timestamp)}s.jpg"
                         )
-                        drive_url = uploaded.get("webViewLink")
+                        # Use thumbnail link for direct image embedding (webViewLink is an HTML page)
+                        file_id = uploaded.get("id")
+                        drive_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w800"
                         # Ensure public permission so frontend can view it
                         # The upload_file method usually handles this if configured, 
                         # but _set_file_permission inside it might need verification.
