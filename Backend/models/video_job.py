@@ -29,6 +29,13 @@ class Frame(BaseModel):
     type: Optional[str] = None  # "slide", "demo", "diagram", etc.
 
 
+class SubTopic(BaseModel):
+    title: str
+    visual_summary: str
+    timestamp: str
+    image_url: Optional[str] = None
+    
+    
 class Topic(BaseModel):
     title: str
     timestamp_range: List[str]  # [start, end] in HH:MM:SS format
@@ -39,6 +46,7 @@ class Topic(BaseModel):
     frames: List[Frame] = []
     quotes: List[str] = []
     visual_cues: List[str] = []
+    sub_topics: List[SubTopic] = []
 
 
 class TranscriptSegment(BaseModel):

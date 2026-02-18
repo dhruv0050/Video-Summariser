@@ -786,6 +786,235 @@ Return JSON:
                 "insights": ""
             } for path in frame_paths]
     
+    async def analyze_frame_clusters(self, clusters: List[Dict]) -> List[Dict]:
+        """
+        Analyze clusters of frames to select hero frame and extract topic.
+        
+        Args:
+            clusters: List of clusters from ImageProcessor
+            
+        Returns:
+            List of visual subtopics (title, summary, hero_frame_path)
+        """
+        results = []
+        
+        print(f"Analyzing {len(clusters)} visual clusters with Gemini Vision...")
+        
+        for i, cluster in enumerate(clusters):
+            # Limit candidates to top 5 sharpest frames
+            candidates = cluster.get('candidates', [])[:5] 
+            frame_paths = [c['path'] for c in candidates]
+            
+            # Prepare images
+            image_parts = []
+            valid_candidates = []
+            
+            for idx, path in enumerate(frame_paths):
+                try:
+                    img = Image.open(path)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    image_parts.append(img)
+                    valid_candidates.append(candidates[idx])
+                except:
+                    continue
+            
+            if not image_parts:
+                continue
+            
+            # Use timestamps for context
+            start_ts = seconds_to_timestamp(cluster.get('start_time', 0))
+            end_ts = seconds_to_timestamp(cluster.get('end_time', 0))
+                
+            prompt = f"""
+            I am providing you with {len(image_parts)} frames captured within a processing window from {start_ts} to {end_ts}. These likely represent the same slide or visual element, potentially with slight animations or cursor movements.
+            
+            Task 1: Select the "Hero Frame". This is the frame that is most focused, least blurry, and contains the most complete information (e.g., the full list is revealed, or the slide build is complete).
+            Task 2: Extract the title or main heading from that frame.
+            Task 3: Summarize the specific data or concept shown in that frame (do not summarize the audio, only what is VISIBLE).
+
+            Return JSON:
+            {{
+              "hero_frame_index": 0, // The index of the selected best image (0 to {len(image_parts)-1})
+              "sub_topic_title": "Slide Title",
+              "visual_summary": "Description of the visual content (chart trends, code purpose, diagram flow)",
+              "ocr_keywords": ["keyword1", "keyword2"]
+            }}
+            """
+            
+            def _analyze_single_cluster():
+                # print(f"Analyzing cluster {i+1}/{len(clusters)} with {len(image_parts)} frames...")
+                content = [prompt] + image_parts
+                response = self.vision_model.generate_content(content)
+                return self._parse_json_response(response.text)
+
+            try:
+                # Use retry logic for robustness
+                parsed = retry_with_backoff(_analyze_single_cluster, max_retries=2, initial_delay=1)
+                
+                if parsed:
+                    idx = parsed.get("hero_frame_index", 0)
+                    # Validate index
+                    if not isinstance(idx, int) or idx < 0 or idx >= len(valid_candidates):
+                        idx = 0
+                        
+                    hero_frame = valid_candidates[idx]
+                    
+                    results.append({
+                        "timestamp": hero_frame['timestamp'],
+                        "hero_frame_path": hero_frame['path'],
+                        "sub_topic_title": parsed.get("sub_topic_title", "Visual Topic"),
+                        "visual_summary": parsed.get("visual_summary", ""),
+                        "ocr_keywords": parsed.get("ocr_keywords", []),
+                        "frame_count": cluster.get('frame_count', 1),
+                        "cluster_idx": i
+                    })
+                    print(f"Cluster {i+1}/{len(clusters)}: Hero Frame Selected (Index {idx}). Title: {parsed.get('sub_topic_title')}")
+                else:
+                    print(f"Cluster {i+1}: Failed to parse response")
+                    
+            except Exception as e:
+                print(f"Error analyzing cluster {i+1}: {e}")
+                continue
+                
+        return results
+
+    async def map_visuals_to_topics(
+        self,
+        main_topics: List[Dict],
+        visual_subtopics: List[Dict]
+    ) -> List[Dict]:
+        """
+        Intelligently map visual sub-topics to main transcript topics using LLM.
+        """
+        if not main_topics or not visual_subtopics:
+            return main_topics
+            
+        print(f"Mapping {len(visual_subtopics)} visual subtopics to {len(main_topics)} main topics...")
+        
+        # Prepare minimal data for prompt
+        simple_main_topics = [{
+            "title": t.get("title"),
+            "timestamp_range": t.get("timestamp_range")
+        } for t in main_topics]
+        
+        simple_visuals = [{
+            "title": v.get("sub_topic_title"),
+            "visual_summary": v.get("visual_summary"),
+            "timestamp": seconds_to_timestamp(v.get("timestamp", 0)),
+            "original_index": i
+        } for i, v in enumerate(visual_subtopics)]
+        
+        prompt = f"""
+        You are a Report Structuring Engine. I have a list of "Main Topics" derived from the audio transcript, and a list of "Visual Sub-Topics" derived from analyzing screenshots.
+
+        Your task is to nest the Visual Sub-Topics under the correct Main Topic based on their timestamps.
+
+        Rules:
+        1. A Visual Sub-Topic belongs to a Main Topic if its timestamp falls within the Main Topic's start/end range.
+        2. If a Main Topic has more than 3 visual sub-topics, select the 3 most distinct ones based on their titles and summaries to avoid repetition.
+        3. If a visual doesn't fit any main topic perfectly, fit it to the nearest logical topic.
+
+        Input Data:
+        Main Topics: {json.dumps(simple_main_topics, indent=2)}
+        Visual Sub-Topics: {json.dumps(simple_visuals, indent=2)}
+
+        Return the Final JSON Structure:
+        {{
+          "topics": [
+            {{
+              "title": "Main Topic Title", 
+              "sub_topics": [
+                {{
+                  "title": "Visual Sub-Topic Title", 
+                  "visual_summary": "Summary...", 
+                  "timestamp": "HH:MM:SS",
+                  "original_index": 0 
+                }}
+              ]
+            }}
+          ]
+        }}
+        """
+        
+        def _map_topics():
+            response = self.text_model.generate_content(prompt)
+            return self._parse_json_response(response.text)
+            
+        try:
+            mapped_result = retry_with_backoff(_map_topics, max_retries=2)
+            
+            if mapped_result and "topics" in mapped_result:
+                # Merge logic
+                # We want to preserve the FULL original main_topic data (which has summaries etc)
+                # and attach sub_topics to it.
+                
+                # Clone main_topics to avoid mutating original list during iteration
+                import copy
+                final_topics = copy.deepcopy(main_topics)
+                
+                # Create lookup for result topics
+                result_topic_map = {t.get("title"): t for t in mapped_result["topics"]}
+                
+                for topic in final_topics:
+                    mapped = result_topic_map.get(topic.get("title"))
+                    if mapped:
+                        sub_topics_data = []
+                        for sub in mapped.get("sub_topics", []):
+                            idx = sub.get("original_index")
+                            if idx is not None and 0 <= idx < len(visual_subtopics):
+                                # Get full visual data
+                                visual = visual_subtopics[idx]
+                                sub_topics_data.append({
+                                    "title": sub.get("title", visual.get("sub_topic_title")),
+                                    "visual_summary": sub.get("visual_summary", visual.get("visual_summary")),
+                                    "timestamp": sub.get("timestamp", seconds_to_timestamp(visual.get("timestamp", 0))),
+                                    "image_url": None, # Will be filled by pipeline using frame_path map
+                                    "frame_timestamp": visual.get("timestamp", 0) # Keep seconds for linking
+                                })
+                        topic["sub_topics"] = sub_topics_data
+                    else:
+                        topic["sub_topics"] = []
+                
+                return final_topics
+            else:
+                return self._fallback_map_topics(main_topics, visual_subtopics)
+                
+        except Exception as e:
+            print(f"Error mapping topics: {e}")
+            return self._fallback_map_topics(main_topics, visual_subtopics)
+
+    def _fallback_map_topics(self, main_topics, visual_subtopics):
+        """Simple timestamp-based mapping fallback"""
+        print("Using fallback timestamp mapping...")
+        import copy
+        final_topics = copy.deepcopy(main_topics)
+        
+        for topic in final_topics:
+            topic["sub_topics"] = []
+            
+            ts_start = topic.get("timestamp_range", ["00:00:00"])[0]
+            ts_end = topic.get("timestamp_range", ["00:00:00", "23:59:59"])[1]
+            
+            start_time = timestamp_to_seconds(ts_start)
+            end_time = timestamp_to_seconds(ts_end)
+            
+            for v in visual_subtopics:
+                ts = v.get("timestamp", 0)
+                if start_time <= ts <= end_time:
+                     topic["sub_topics"].append({
+                        "title": v.get("sub_topic_title"),
+                        "visual_summary": v.get("visual_summary"),
+                        "timestamp": seconds_to_timestamp(ts),
+                        "frame_timestamp": ts,
+                        "image_url": None
+                    })
+            
+            # Limit to 3 per topic
+            topic["sub_topics"] = topic["sub_topics"][:3]
+            
+        return final_topics
+
     async def synthesize_results(
         self,
         transcript_analysis: Dict[str, Any],

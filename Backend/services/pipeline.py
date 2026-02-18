@@ -5,12 +5,13 @@ from typing import Dict, Any
 from bson import ObjectId
 
 from models.database import db
-from models.video_job import VideoJob, TranscriptSegment, Topic, Frame
+from models.video_job import VideoJob, TranscriptSegment, Topic, Frame, SubTopic
 from services.drive_service import drive_service
 from services.youtube_service import youtube_service
 from services.gemini_service import gemini_service
 from utils.ffmpeg_utils import FFmpegUtils
 from utils.roi_utils import merge_time_windows
+from utils.image_processing import ImageProcessor
 import config
 
 
@@ -208,19 +209,78 @@ class ProcessingPipeline:
             
             # Sorted list of unique frames
             frames = sorted(combined_frames_map.values(), key=lambda x: x[1])
-            print(f"Total unique frames for analysis: {len(frames)}")
+            print(f"Total unique frames for visual processing: {len(frames)}")
+
+            # Phase 3: Visual Intelligence (The "Clean Up")
+            # Step 1: Visual Deduplication
+            print(f"Clustering {len(frames)} frames to find unique visual topics...")
+            # Threshold 12 is a reasonable starting point for 64-bit dHash (0-64 distance)
+            clusters = ImageProcessor.cluster_frames(frames, threshold=12)
+            print(f"Found {len(clusters)} unique visual clusters/slides.")
             
-            # Limit total frames to avoid blowing up costs/time if video is huge
-            # MAX_ANALYSIS_FRAMES = 150 (configurable?)
-            if len(frames) > config.MAX_ANALYSIS_FRAMES:
-                print(f"Limiting frames from {len(frames)} to {config.MAX_ANALYSIS_FRAMES}")
-                step = len(frames) / config.MAX_ANALYSIS_FRAMES
-                frames = [frames[int(i * step)] for i in range(config.MAX_ANALYSIS_FRAMES)]
+            await self._update_job(job_id, {
+                "progress": 0.75,
+                "visual_clusters_count": len(clusters),
+                "visual_clusters_preview": [{"start": c["start_time"], "end": c["end_time"], "count": c["frame_count"]} for c in clusters[:10]]
+            })
             
-            # Step 6: Analyze frames
-            await self._update_job(job_id, {"progress": 0.75})
-            frame_analyses = await self._analyze_frames(frames, job_id, transcript_analysis)
-            await self._update_job(job_id, {"progress": 0.85})
+            # Step 2: Hero Frame Selector
+            print(f"Selecting Hero Frames for {len(clusters)} clusters...")
+            visual_subtopics = await gemini_service.analyze_frame_clusters(clusters)
+            
+            # Step 3: Upload Hero Frames & Map to frame_analyses
+            print("Uploading Hero Frames to Google Drive...")
+            
+            # Create folder in Drive for this job
+            folder_name = f"video_{job_id}_frames"
+            try:
+                # Reuse existing folder logic if possible or create new
+                folder_id = drive_service.create_folder(
+                    folder_name,
+                    parent_folder_id=config.DRIVE_FOLDER_ID
+                )
+                await self._update_job(job_id, {"drive_folder_id": folder_id})
+            except Exception as e:
+                print(f"Error creating Drive folder: {e}")
+                folder_id = config.DRIVE_FOLDER_ID # Fallback
+            
+            # We map "visual_subtopics" (Phase 3 result) to "frame_analyses" (Phase 1 structure)
+            frame_analyses = []
+            for i, item in enumerate(visual_subtopics):
+                frame_path = item["hero_frame_path"]
+                timestamp = item["timestamp"]
+                
+                drive_url = None
+                try:
+                    if os.path.exists(frame_path):
+                        # Upload to Drive
+                        uploaded = drive_service.upload_file(
+                            frame_path,
+                            folder_id=folder_id,
+                            file_name=f"hero_{i:02d}_{int(timestamp)}s.jpg"
+                        )
+                        drive_url = uploaded.get("webViewLink")
+                        # Ensure public permission so frontend can view it
+                        # The upload_file method usually handles this if configured, 
+                        # but _set_file_permission inside it might need verification.
+                        # Assuming upload_file handles permission as seen in previous steps.
+                except Exception as e:
+                    print(f"Error uploading frame {frame_path}: {e}")
+
+                frame_analyses.append({
+                    "frame_path": frame_path,
+                    "drive_url": drive_url, # Frontend uses this!
+                    "timestamp": timestamp,
+                    "description": item["sub_topic_title"],
+                    "ocr_text": " ".join(item.get("keywords", [])),
+                    "type": "slide", 
+                    "insights": item["visual_summary"]
+                })
+            
+            await self._update_job(job_id, {
+                "progress": 0.85,
+                "visual_subtopics": visual_subtopics
+            })
             
             # Step 7: Synthesize results
             await self._update_job(job_id, {
@@ -233,6 +293,14 @@ class ProcessingPipeline:
                 duration,
                 video_genre=video_genre
             )
+            
+            # Step 7.1: Map Visuals to Topics (Phase 4)
+            print("Mapping visual sub-topics to synthesized main topics...")
+            main_topics = synthesis.get("topics", [])
+            mapped_topics = await gemini_service.map_visuals_to_topics(main_topics, visual_subtopics)
+            
+            # Update synthesis with mapped topics
+            synthesis["topics"] = mapped_topics
             
             # Step 8: Build final output
             topics = await self._build_topics(
@@ -546,6 +614,35 @@ class ProcessingPipeline:
                     )
                     topic_frames.append(frame)
             
+            # Sub-topics processing (Phase 4)
+            sub_topics_instances = []
+            for sub in topic_info.get("sub_topics", []): 
+                # Find matching frame URL if not present
+                img_url = sub.get("image_url")
+                sub_ts = sub.get("frame_timestamp")
+                
+                if not img_url and sub_ts is not None:
+                    # Find closest frame in frame_analyses
+                    closest_diff = 2.0
+                    closest_frame = None
+                    for fa in frame_analyses:
+                        fa_ts = fa.get("timestamp", 0)
+                        if isinstance(fa_ts, str): continue
+                        diff = abs(fa_ts - float(sub_ts))
+                        if diff < closest_diff:
+                            closest_diff = diff
+                            closest_frame = fa
+                    
+                    if closest_frame:
+                         img_url = closest_frame.get("drive_url")
+                
+                sub_topics_instances.append(SubTopic(
+                    title=sub.get("title", "Visual Topic"),
+                    visual_summary=sub.get("visual_summary", ""),
+                    timestamp=sub.get("timestamp", "00:00:00"),
+                    image_url=img_url
+                ))
+
             topic = Topic(
                 title=topic_info.get("title", "Untitled"),
                 timestamp_range=[seconds_to_timestamp(start_seconds), seconds_to_timestamp(end_seconds)],
@@ -555,7 +652,8 @@ class ProcessingPipeline:
                 key_points=topic_info.get("key_points", []),
                 frames=topic_frames,
                 quotes=topic_info.get("quotes", []),
-                visual_cues=topic_info.get("visual_cues", [])
+                visual_cues=topic_info.get("visual_cues", []),
+                sub_topics=sub_topics_instances
             )
             topics.append(topic)
         
