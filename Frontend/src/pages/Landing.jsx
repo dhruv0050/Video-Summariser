@@ -24,7 +24,7 @@ const Landing = () => {
     if (!url) return 'auto';
     const youtubePattern = /(?:youtube\.com|youtu\.be)/;
     const drivePattern = /drive\.google\.com/;
-    
+
     if (youtubePattern.test(url)) return 'youtube';
     if (drivePattern.test(url)) return 'drive';
     return 'auto';
@@ -119,7 +119,7 @@ const Landing = () => {
 
     try {
       let endpoint, payload;
-      
+
       if (source === 'youtube') {
         endpoint = `${API_BASE}/api/videos/process-youtube`;
         payload = {
@@ -194,10 +194,37 @@ const Landing = () => {
 
   const renderTopics = () => {
     if (!result?.topics?.length) return null;
-    return result.topics.map((topic, idx) => (
+
+    // Filter out ads/sponsorships from display
+    const contentTopics = result.topics.filter(topic => {
+      // Check explicit type if available
+      if (topic.type === 'ad') return false;
+
+      // Check keywords in title/summary
+      const text = (topic.title + ' ' + (topic.summary || '')).toLowerCase();
+
+      // DEBUG: Check what is being filtered
+      console.log(`Checking topic: "${topic.title}"`, text);
+
+      if (topic.title.includes("Sponsorship Message")) {
+        console.log("Explicitly blocking Sponsorship Message");
+        return false;
+      }
+
+      const isAd = text.includes('sponsorship') ||
+        text.includes('advertisement') ||
+        text.includes('promotional message') ||
+        text.includes('paid promotion') ||
+        (text.includes('sponsor') && text.includes('message'));
+
+      if (isAd) console.log("Blocked ad:", topic.title);
+      return !isAd;
+    });
+
+    return contentTopics.map((topic, idx) => (
       <div className="card" key={`${topic.title}-${idx}`}>
         <div className="card-header">
-          <div className="pill">Topic {idx + 1}</div>
+          <div className="pill">Topic {idx + 1} (v1.1)</div>
           <div className="timestamp">{topic.timestamp_range?.join(' — ')}</div>
         </div>
         <h3>{topic.title}</h3>
@@ -220,9 +247,9 @@ const Landing = () => {
                 target="_blank"
                 rel="noreferrer"
                 key={i}
-                style={{ 
-                  textDecoration: 'none', 
-                  padding: 0, 
+                style={{
+                  textDecoration: 'none',
+                  padding: 0,
                   overflow: 'hidden',
                   display: 'flex',
                   flexDirection: 'column'
@@ -239,19 +266,19 @@ const Landing = () => {
                     borderBottom: '1px solid rgba(255,255,255,0.06)'
                   }} />
                 ) : (
-                   <div style={{ 
-                     height: '120px', 
-                     background: 'linear-gradient(45deg, #1f2937, #111827)', 
-                     display: 'flex', 
-                     alignItems: 'center', 
-                     justifyContent: 'center',
-                     color: '#374151',
-                     fontSize: '24px'
-                   }}>
-                     🖼️
-                   </div>
+                  <div style={{
+                    height: '120px',
+                    background: 'linear-gradient(45deg, #1f2937, #111827)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#374151',
+                    fontSize: '24px'
+                  }}>
+                    🖼️
+                  </div>
                 )}
-                
+
                 <div style={{ padding: '12px', flex: 1, display: 'flex', flexDirection: 'column' }}>
                   <div className="frame-meta" style={{ marginBottom: '6px' }}>
                     <span className="pill pill-ghost" style={{ fontSize: '10px', padding: '2px 8px' }}>
@@ -262,9 +289,9 @@ const Landing = () => {
                     {sub.title}
                   </div>
                   {sub.visual_summary && (
-                     <div style={{ marginTop: '6px', fontSize: '11px', color: '#9ca3af', lineHeight: '1.3' }}>
-                       {sub.visual_summary.length > 80 ? sub.visual_summary.substring(0, 80) + '...' : sub.visual_summary}
-                     </div>
+                    <div style={{ marginTop: '6px', fontSize: '11px', color: '#9ca3af', lineHeight: '1.3' }}>
+                      {sub.visual_summary.length > 80 ? sub.visual_summary.substring(0, 80) + '...' : sub.visual_summary}
+                    </div>
                   )}
                 </div>
               </a>
@@ -309,12 +336,12 @@ const Landing = () => {
           {viewingPastReport && (
             <button
               onClick={() => {
-              setViewingPastReport(false);
-              setJobId('');
-              setResult(null);
-              setVideoUrl('');
-              setVideoName('');
-              navigate('/');
+                setViewingPastReport(false);
+                setJobId('');
+                setResult(null);
+                setVideoUrl('');
+                setVideoName('');
+                navigate('/');
               }}
               style={{
                 padding: '10px 20px',
@@ -367,128 +394,128 @@ const Landing = () => {
       </header>
 
       {!viewingPastReport && (
-      <form className="card form" onSubmit={handleSubmit}>
-        <div className="field">
-          <label>Video Source</label>
-          <select
-            value={videoSource}
-            onChange={(e) => {
-              setVideoSource(e.target.value);
-              if (e.target.value !== 'upload') {
-                setUploadedFile(null);
-              }
-              if (e.target.value === 'upload') {
-                setVideoUrl('');
-              }
-            }}
-            style={{
-              padding: '12px',
-              backgroundColor: 'rgba(255,255,255,0.05)',
-              color: 'grey',
-              border: '1px solid rgba(255,255,255,0.2)',
-              borderRadius: '8px',
-              fontSize: '14px',
-              width: '100%',
-              marginBottom: '15px'
-            }}
-          >
-            <option value="auto">Auto-detect from URL</option>
-            <option value="upload">Upload Video File</option>
-            <option value="drive">Google Drive</option>
-            <option value="youtube">YouTube</option>
-          </select>
-        </div>
-
-        {videoSource === 'upload' ? (
+        <form className="card form" onSubmit={handleSubmit}>
           <div className="field">
-            <label>Upload Video File</label>
-            <input
-              type="file"
-              accept="video/*"
+            <label>Video Source</label>
+            <select
+              value={videoSource}
               onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) {
-                  setUploadedFile(file);
-                  if (!videoName.trim()) {
-                    setVideoName(file.name.replace(/\.[^/.]+$/, ''));
-                  }
+                setVideoSource(e.target.value);
+                if (e.target.value !== 'upload') {
+                  setUploadedFile(null);
+                }
+                if (e.target.value === 'upload') {
+                  setVideoUrl('');
                 }
               }}
-              required
               style={{
                 padding: '12px',
                 backgroundColor: 'rgba(255,255,255,0.05)',
-                color: 'white',
+                color: 'grey',
                 border: '1px solid rgba(255,255,255,0.2)',
                 borderRadius: '8px',
                 fontSize: '14px',
                 width: '100%',
-                cursor: 'pointer'
+                marginBottom: '15px'
               }}
-            />
-            {uploadedFile && (
-              <div style={{ marginTop: '8px', fontSize: '12px', color: '#10b981' }}>
-                ✓ Selected: {uploadedFile.name} ({(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB)
-              </div>
-            )}
+            >
+              <option value="auto">Auto-detect from URL</option>
+              <option value="upload">Upload Video File</option>
+              <option value="drive">Google Drive</option>
+              <option value="youtube">YouTube</option>
+            </select>
           </div>
-        ) : (
-          <div className="field">
-            <label>Video URL (Google Drive or YouTube)</label>
-            <input
-              type="url"
-              placeholder="https://drive.google.com/file/d/FILE_ID/view or https://youtube.com/watch?v=VIDEO_ID"
-              value={videoUrl}
-              onChange={(e) => {
-                setVideoUrl(e.target.value);
-                const detected = detectVideoSource(e.target.value);
-                if (detected !== 'auto' && videoSource === 'auto') {
-                  setVideoSource(detected);
-                }
-              }}
-              required={videoSource !== 'upload'}
-            />
-            <div style={{ marginTop: '8px', fontSize: '12px', color: '#9ca3af' }}>
-              {videoUrl && detectVideoSource(videoUrl) === 'youtube' && '✓ YouTube URL detected'}
-              {videoUrl && detectVideoSource(videoUrl) === 'drive' && '✓ Google Drive URL detected'}
-              {videoUrl && detectVideoSource(videoUrl) === 'auto' && videoSource !== 'upload' && '⚠️ Please enter a valid Drive or YouTube URL'}
+
+          {videoSource === 'upload' ? (
+            <div className="field">
+              <label>Upload Video File</label>
+              <input
+                type="file"
+                accept="video/*"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    setUploadedFile(file);
+                    if (!videoName.trim()) {
+                      setVideoName(file.name.replace(/\.[^/.]+$/, ''));
+                    }
+                  }
+                }}
+                required
+                style={{
+                  padding: '12px',
+                  backgroundColor: 'rgba(255,255,255,0.05)',
+                  color: 'white',
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  borderRadius: '8px',
+                  fontSize: '14px',
+                  width: '100%',
+                  cursor: 'pointer'
+                }}
+              />
+              {uploadedFile && (
+                <div style={{ marginTop: '8px', fontSize: '12px', color: '#10b981' }}>
+                  ✓ Selected: {uploadedFile.name} ({(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB)
+                </div>
+              )}
             </div>
+          ) : (
+            <div className="field">
+              <label>Video URL (Google Drive or YouTube)</label>
+              <input
+                type="url"
+                placeholder="https://drive.google.com/file/d/FILE_ID/view or https://youtube.com/watch?v=VIDEO_ID"
+                value={videoUrl}
+                onChange={(e) => {
+                  setVideoUrl(e.target.value);
+                  const detected = detectVideoSource(e.target.value);
+                  if (detected !== 'auto' && videoSource === 'auto') {
+                    setVideoSource(detected);
+                  }
+                }}
+                required={videoSource !== 'upload'}
+              />
+              <div style={{ marginTop: '8px', fontSize: '12px', color: '#9ca3af' }}>
+                {videoUrl && detectVideoSource(videoUrl) === 'youtube' && '✓ YouTube URL detected'}
+                {videoUrl && detectVideoSource(videoUrl) === 'drive' && '✓ Google Drive URL detected'}
+                {videoUrl && detectVideoSource(videoUrl) === 'auto' && videoSource !== 'upload' && '⚠️ Please enter a valid Drive or YouTube URL'}
+              </div>
+            </div>
+          )}
+
+          <div className="field">
+            <label>Video Name (optional)</label>
+            <input
+              type="text"
+              placeholder="My Seminar / Lecture"
+              value={videoName}
+              onChange={(e) => setVideoName(e.target.value)}
+            />
           </div>
-        )}
 
-        <div className="field">
-          <label>Video Name (optional)</label>
-          <input
-            type="text"
-            placeholder="My Seminar / Lecture"
-            value={videoName}
-            onChange={(e) => setVideoName(e.target.value)}
-          />
-        </div>
-
-        <div className="actions">
-          <button 
-            type="submit" 
-            disabled={
-              (videoSource === 'upload' ? !uploadedFile : !videoUrl.trim()) || 
-              status === 'pending' || 
-              polling
-            }
-          >
-            {status === 'pending' || polling ? 'Processing…' : 'Start Processing'}
-          </button>
-          {jobId && !viewingPastReport && <span className="muted">Job ID: {jobId}</span>}
-        </div>
-
-        {error && <div className="error">{error}</div>}
-
-        {(status !== 'idle' && status !== 'failed') && (
-          <div className="progress">
-            <div className="progress-bar" style={{ width: `${Math.round(progress * 100)}%` }} />
-            <div className="progress-label">{Math.round(progress * 100)}%</div>
+          <div className="actions">
+            <button
+              type="submit"
+              disabled={
+                (videoSource === 'upload' ? !uploadedFile : !videoUrl.trim()) ||
+                status === 'pending' ||
+                polling
+              }
+            >
+              {status === 'pending' || polling ? 'Processing…' : 'Start Processing'}
+            </button>
+            {jobId && !viewingPastReport && <span className="muted">Job ID: {jobId}</span>}
           </div>
-        )}
-      </form>
+
+          {error && <div className="error">{error}</div>}
+
+          {(status !== 'idle' && status !== 'failed') && (
+            <div className="progress">
+              <div className="progress-bar" style={{ width: `${Math.round(progress * 100)}%` }} />
+              <div className="progress-label">{Math.round(progress * 100)}%</div>
+            </div>
+          )}
+        </form>
       )}
 
       {result && (
@@ -499,11 +526,11 @@ const Landing = () => {
               <div className="timestamp">Duration: {result.duration ? `${Math.round(result.duration / 60)} min` : '—'}</div>
             </div>
             {result.video_genre && result.video_genre !== 'unknown' && (
-              <div style={{ 
-                marginBottom: '15px', 
-                display: 'flex', 
-                alignItems: 'center', 
-                gap: '8px' 
+              <div style={{
+                marginBottom: '15px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
               }}>
                 <span style={{
                   padding: '4px 12px',
@@ -556,9 +583,9 @@ const Landing = () => {
 
       {/* Video Chatbot - only show when results are available */}
       {result && jobId && result.status === 'completed' && (
-        <VideoChatBot 
-          jobId={jobId} 
-          videoName={result.video_name || videoName || 'this video'} 
+        <VideoChatBot
+          jobId={jobId}
+          videoName={result.video_name || videoName || 'this video'}
         />
       )}
     </div>

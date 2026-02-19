@@ -630,6 +630,7 @@ Return JSON:
            - Each topic should have clear start and end timestamps
            - Topics should progress chronologically through the video
            - Ensure topics cover from the start to the end of the video
+           - CRITICAL: Identify and label any sponsorship, advertisement, or pure promotional segments as "ad". Label educational/main content as "content".
         2. Key moments: Important phrases that likely reference visuals ("as shown", "this slide", etc.)
         3. Named entities: People, companies, tools, concepts mentioned
         4. Key takeaways: Main insights from the content
@@ -644,7 +645,8 @@ Return JSON:
                     "title": "Topic title",
                     "timestamp_range": ["00:00:00", "00:15:30"],
                     "summary": "Brief summary",
-                    "key_points": ["point 1", "point 2"]
+                    "key_points": ["point 1", "point 2"],
+                    "type": "content" // "content" or "ad"
                 }}
             ],
             "visual_cues": [
@@ -663,7 +665,7 @@ Return JSON:
             "key_takeaways": ["takeaway 1", "takeaway 2"]
         }}
         
-        Remember: Generate topics that span from 00:00:00 to {seconds_to_timestamp(duration)} to cover the entire video.
+        Remember: Generate topics that span from 00:00:00 to {seconds_to_timestamp(duration)} to cover the entire video. Mark sponsorships as "ad".
         """
             
             print(f"Analyzing transcript chunk {chunk_idx+1}/{total_chunks} with Gemini...")
@@ -914,6 +916,7 @@ Return JSON:
         1. A Visual Sub-Topic belongs to a Main Topic if its timestamp falls within the Main Topic's start/end range.
         2. If a Main Topic has more than 3 visual sub-topics, select the 3 most distinct ones based on their titles and summaries to avoid repetition.
         3. If a visual doesn't fit any main topic perfectly, fit it to the nearest logical topic.
+        4. CRITICAL: If a Visual Sub-Topic is clearly an advertisement, sponsorship, or unrelated promotion (e.g. brand logos, 'buy now', 'subscribe'), DISCARD IT. Do not map it to any topic.
 
         Input Data:
         Main Topics: {json.dumps(simple_main_topics, indent=2)}
