@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useUser } from '@clerk/clerk-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 const Reports = () => {
   const navigate = useNavigate();
+  const { user } = useUser();
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -40,16 +42,19 @@ const Reports = () => {
       query.append('page', page);
       query.append('limit', limit);
       if (status) query.append('status', status);
+      if (user?.id) query.append('user_id', user.id);
 
       const response = await fetch(`${API_BASE}/api/videos/reports?${query}`);
-      
+
       if (!response.ok) {
         throw new Error('Failed to fetch reports');
       }
 
       const data = await response.json();
-      setReports(data);
-      setTotalReports(data.length);
+      // Filter out playlist-linked videos (view those from Topics page)
+      const standaloneReports = data.filter(r => !r.topic_id);
+      setReports(standaloneReports);
+      setTotalReports(standaloneReports.length);
     } catch (err) {
       setError(err.message);
       setReports([]);
@@ -59,8 +64,10 @@ const Reports = () => {
   };
 
   useEffect(() => {
-    fetchReports();
-  }, [page, status]);
+    if (user?.id) {
+      fetchReports();
+    }
+  }, [page, status, user?.id]);
 
   const handleViewReport = (jobId) => {
     navigate(`/?jobId=${jobId}`);
@@ -73,7 +80,7 @@ const Reports = () => {
       pending: { bg: '#6b7280', text: '○ Pending' },
       failed: { bg: '#ef4444', text: '✕ Failed' }
     };
-    
+
     const style = statusStyles[status] || statusStyles.pending;
     return (
       <span style={{
@@ -405,7 +412,7 @@ const Reports = () => {
                   >
                     View Report →
                   </button>
-                  
+
                   {/* Download Buttons */}
                   <div style={{ display: 'flex', gap: '8px' }}>
                     <button

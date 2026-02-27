@@ -2,7 +2,7 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
 python-multipart==0.0.6
-pydantic==2.8.2
+pydantic==2.10.3
 pydantic-settings==2.1.0
 
 # Google APIs
@@ -21,7 +21,7 @@ opencv-python==4.9.0.80
 scenedetect[opencv]==0.6.3
 Pillow==11.0.0
 imageio-ffmpeg==0.4.9
-yt-dlp==2024.12.13
+yt-dlp>=2025.02.10
 
 # Audio processing
 pydub==0.25.1
@@ -38,3 +38,7 @@ aiofiles==23.2.1
 
 # Progress tracking
 tqdm==4.66.1
+
+# Automation
+playwright>=1.40.0
+bgutil-ytdlp-pot-provider

@@ -5,6 +5,7 @@ import os
 
 from models.database import db
 from routes.video_routes import router as video_router
+from routes.topic_routes import router as topic_router
 import config
 
 
@@ -59,6 +60,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(video_router)
+app.include_router(topic_router)
 
 
 @app.get("/")
@@ -94,9 +96,11 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+    # Use PORT from environment (Render sets this) or default to 8000
+    app_port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
-        reload=False  # Set to False in production
+        port=app_port,
+        reload=False
     )

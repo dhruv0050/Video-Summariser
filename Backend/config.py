@@ -25,6 +25,14 @@ AUDIO_OVERLAP_DURATION = 30  # 30 seconds overlap
 KEYFRAME_INTERVAL = 60  # Extract keyframe every 60 seconds
 MAX_FRAMES_PER_VIDEO = 120  # Maximum frames to extract
 MAX_ANALYSIS_FRAMES = 150 # Max frames to send to Gemini for deep analysis (Phase 2)
+# Concurrency Configuration (Tune based on Server RAM and API Limits)
+# For Render Free (512MB): Use 2
+# For Render Starter (2GB): Use 5
+# For Render Pro (4GB+): Use 10+
+MAX_CONCURRENT_TRANSCRIBES = 2
+MAX_CONCURRENT_VISION_TASKS = 2
+MAX_CONCURRENT_UPLOADS = 3
+
 AUDIO_SAMPLE_RATE = 16000  # 16kHz for transcription
 
 # YouTube Configuration (optional)
@@ -40,7 +48,7 @@ CORS_ORIGINS = [
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
     # Production - Add your Vercel URL here
-    "https://video-summariser-eight.vercel.app",
+    "https://video-summarizer-dusky.vercel.app",
     # For testing - remove in production for security
     "https://long-from-video-summariser-beyond-ai.onrender.com",
 ]

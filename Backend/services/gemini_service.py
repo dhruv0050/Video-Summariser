@@ -2,6 +2,7 @@ import os
 import json
 import time
 import re
+import asyncio
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from PIL import Image
@@ -50,7 +51,7 @@ class GeminiService:
     def __init__(self):
         self.model_name = config.MODEL
         self.text_model = genai.GenerativeModel(self.model_name)
-        # Use gemini-2.5-flash for Vision (higher quota limits)
+        # Use gemini-1.5-flash for Vision (higher quota limits)
         self.vision_model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Genre mapping for fuzzy matching
@@ -263,7 +264,7 @@ Return ONLY valid JSON:
             return {"genre": genre, "confidence": float(confidence), "reason": reason}
 
         try:
-            return retry_with_backoff(_classify, max_retries=2, initial_delay=1) or {
+            return await asyncio.to_thread(retry_with_backoff, _classify, 2, 1) or {
                 "genre": "unknown",
                 "confidence": 0.0,
                 "reason": "",
@@ -329,7 +330,7 @@ If no cues are found, return an empty list.
             return result.get("visual_cues", []) if result else []
 
         try:
-            return retry_with_backoff(_scout, max_retries=2)
+            return await asyncio.to_thread(retry_with_backoff, _scout, 2)
         except Exception as e:
             print(f"Audio Cue Scout failed: {e}")
             return []
@@ -377,7 +378,7 @@ Return JSON:
             return result
 
         try:
-            return retry_with_backoff(_gatekeep, max_retries=2)
+            return await asyncio.to_thread(retry_with_backoff, _gatekeep, 2)
         except Exception as e:
             print(f"Gatekeeper analysis failed for {frame_path}: {e}")
             return {
@@ -407,11 +408,10 @@ Return JSON:
             print(f"Uploading audio chunk starting at {start_time}s...")
             
             # Use the correct API for google-generativeai >= 0.4.0
-            with open(audio_path, 'rb') as audio_file_obj:
-                audio_file = genai.upload_file(
-                    path=audio_path,
-                    mime_type="audio/wav"
-                )
+            audio_file = genai.upload_file(
+                path=audio_path,
+                mime_type="audio/wav"
+            )
             
             prompt = """
             Transcribe this audio with speaker diarization. 
@@ -452,7 +452,7 @@ Return JSON:
             return segments
         
         try:
-            return retry_with_backoff(_transcribe, max_retries=3)
+            return await asyncio.to_thread(retry_with_backoff, _transcribe, 3)
         except Exception as e:
             print(f"Error transcribing audio after retries: {e}")
             # Fallback: simple transcription without timestamps
@@ -485,7 +485,8 @@ Return JSON:
         self, 
         transcript_text: str,
         duration: float,
-        video_genre: Optional[str] = None
+        video_genre: Optional[str] = None,
+        playlist_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Analyze transcript to extract topics, key moments, etc. with retry logic
@@ -530,7 +531,8 @@ Return JSON:
                     len(chunks),
                     chunk_start_approx,
                     chunk_end_approx,
-                    video_genre=video_genre
+                    video_genre=video_genre,
+                    playlist_context=playlist_context
                 )
                 if result:
                     # Always provide full duration context, so each chunk should generate topics for full video
@@ -557,7 +559,7 @@ Return JSON:
                 "visual_cues": all_visual_cues
             }
         else:
-            return await self._analyze_transcript_chunk(transcript_text, duration, 0, 1, 0.0, duration, video_genre=video_genre)
+            return await self._analyze_transcript_chunk(transcript_text, duration, 0, 1, 0.0, duration, video_genre=video_genre, playlist_context=playlist_context)
     
     def _deduplicate_topics(self, topics: List[Dict], duration: float) -> List[Dict]:
         """Deduplicate and merge overlapping topics"""
@@ -605,7 +607,8 @@ Return JSON:
         total_chunks: int,
         chunk_start_time: float = None,
         chunk_end_time: float = None,
-        video_genre: Optional[str] = None
+        video_genre: Optional[str] = None,
+        playlist_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """Analyze a single transcript chunk"""
         def _analyze():
@@ -623,11 +626,12 @@ Return JSON:
         CRITICAL: You must analyze the transcript and generate topics with timestamps that cover the FULL video duration from 00:00:00 to {seconds_to_timestamp(duration)}. Do not stop at just the beginning or middle - ensure topics are distributed throughout the entire video.{time_info}
 
         {genre_snippet}
+
+        {f'{playlist_context}' if playlist_context else ''}
         
         Extract the following:
         
         1. Topic segmentation: Break the video into logical chapters/sections with start/end timestamps covering the ENTIRE duration (00:00:00 to {seconds_to_timestamp(duration)})
-           - Each topic should have clear start and end timestamps
            - Topics should progress chronologically through the video
            - Ensure topics cover from the start to the end of the video
            - CRITICAL: Identify and label any sponsorship, advertisement, or pure promotional segments as "ad". Label educational/main content as "content".
@@ -674,7 +678,7 @@ Return JSON:
             return result or {}
         
         try:
-            return retry_with_backoff(_analyze, max_retries=3)
+            return await asyncio.to_thread(retry_with_backoff, _analyze, 3)
         except Exception as e:
             print(f"Error analyzing transcript after retries: {e}")
             return {}
@@ -776,7 +780,7 @@ Return JSON:
             return analyses
         
         try:
-            return retry_with_backoff(_analyze, max_retries=3)
+            return await asyncio.to_thread(retry_with_backoff, _analyze, 3)
         except Exception as e:
             print(f"Error analyzing frame batch after retries: {e}")
             # Return placeholder results
@@ -790,7 +794,7 @@ Return JSON:
     
     async def analyze_frame_clusters(self, clusters: List[Dict]) -> List[Dict]:
         """
-        Analyze clusters of frames to select hero frame and extract topic.
+        Analyze clusters of frames to select hero frame and extract topic in parallel.
         
         Args:
             clusters: List of clusters from ImageProcessor
@@ -799,87 +803,92 @@ Return JSON:
             List of visual subtopics (title, summary, hero_frame_path)
         """
         results = []
+        cluster_sem = asyncio.Semaphore(config.MAX_CONCURRENT_VISION_TASKS) # Limit concurrent Vision calls
         
-        print(f"Analyzing {len(clusters)} visual clusters with Gemini Vision...")
+        print(f"⚡ Analyzing {len(clusters)} visual clusters with Gemini Vision in parallel...")
         
-        for i, cluster in enumerate(clusters):
-            # Limit candidates to top 5 sharpest frames
-            candidates = cluster.get('candidates', [])[:5] 
-            frame_paths = [c['path'] for c in candidates]
-            
-            # Prepare images
-            image_parts = []
-            valid_candidates = []
-            
-            for idx, path in enumerate(frame_paths):
+        async def analyze_single(i, cluster):
+            async with cluster_sem:
+                # Limit candidates to top 5 sharpest frames
+                candidates = cluster.get('candidates', [])[:5] 
+                frame_paths = [c['path'] for c in candidates]
+                
+                # Prepare images
+                image_parts = []
+                valid_candidates = []
+                
+                for idx, path in enumerate(frame_paths):
+                    try:
+                        img = Image.open(path)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        image_parts.append(img)
+                        valid_candidates.append(candidates[idx])
+                    except:
+                        continue
+                
+                if not image_parts:
+                    return None
+                
+                # Use timestamps for context
+                start_ts = seconds_to_timestamp(cluster.get('start_time', 0))
+                end_ts = seconds_to_timestamp(cluster.get('end_time', 0))
+                    
+                prompt = f"""
+                I am providing you with {len(image_parts)} frames captured within a processing window from {start_ts} to {end_ts}. These likely represent the same slide or visual element, potentially with slight animations or cursor movements.
+                
+                Task 1: Select the "Hero Frame". This is the frame that is most focused, least blurry, and contains the most complete information (e.g., the full list is revealed, or the slide build is complete).
+                Task 2: Extract the title or main heading from that frame.
+                Task 3: Summarize the specific data or concept shown in that frame (do not summarize the audio, only what is VISIBLE).
+
+                Return JSON:
+                {{
+                  "hero_frame_index": 0, // The index of the selected best image (0 to {len(image_parts)-1})
+                  "sub_topic_title": "Slide Title",
+                  "visual_summary": "Description of the visual content (chart trends, code purpose, diagram flow)",
+                  "ocr_keywords": ["keyword1", "keyword2"]
+                }}
+                """
+                
+                def _do_vision():
+                    content = [prompt] + image_parts
+                    response = self.vision_model.generate_content(content)
+                    return self._parse_json_response(response.text)
+
                 try:
-                    img = Image.open(path)
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    image_parts.append(img)
-                    valid_candidates.append(candidates[idx])
-                except:
-                    continue
-            
-            if not image_parts:
-                continue
-            
-            # Use timestamps for context
-            start_ts = seconds_to_timestamp(cluster.get('start_time', 0))
-            end_ts = seconds_to_timestamp(cluster.get('end_time', 0))
-                
-            prompt = f"""
-            I am providing you with {len(image_parts)} frames captured within a processing window from {start_ts} to {end_ts}. These likely represent the same slide or visual element, potentially with slight animations or cursor movements.
-            
-            Task 1: Select the "Hero Frame". This is the frame that is most focused, least blurry, and contains the most complete information (e.g., the full list is revealed, or the slide build is complete).
-            Task 2: Extract the title or main heading from that frame.
-            Task 3: Summarize the specific data or concept shown in that frame (do not summarize the audio, only what is VISIBLE).
-
-            Return JSON:
-            {{
-              "hero_frame_index": 0, // The index of the selected best image (0 to {len(image_parts)-1})
-              "sub_topic_title": "Slide Title",
-              "visual_summary": "Description of the visual content (chart trends, code purpose, diagram flow)",
-              "ocr_keywords": ["keyword1", "keyword2"]
-            }}
-            """
-            
-            def _analyze_single_cluster():
-                # print(f"Analyzing cluster {i+1}/{len(clusters)} with {len(image_parts)} frames...")
-                content = [prompt] + image_parts
-                response = self.vision_model.generate_content(content)
-                return self._parse_json_response(response.text)
-
-            try:
-                # Use retry logic for robustness
-                parsed = retry_with_backoff(_analyze_single_cluster, max_retries=2, initial_delay=1)
-                
-                if parsed:
-                    idx = parsed.get("hero_frame_index", 0)
-                    # Validate index
-                    if not isinstance(idx, int) or idx < 0 or idx >= len(valid_candidates):
-                        idx = 0
+                    # Use thread for blocking retry/vision call
+                    parsed = await asyncio.to_thread(retry_with_backoff, _do_vision, 2, 1)
+                    
+                    if parsed:
+                        idx = parsed.get("hero_frame_index", 0)
+                        if not isinstance(idx, int) or idx < 0 or idx >= len(valid_candidates):
+                            idx = 0
+                            
+                        hero_frame = valid_candidates[idx]
                         
-                    hero_frame = valid_candidates[idx]
-                    
-                    results.append({
-                        "timestamp": hero_frame['timestamp'],
-                        "hero_frame_path": hero_frame['path'],
-                        "sub_topic_title": parsed.get("sub_topic_title", "Visual Topic"),
-                        "visual_summary": parsed.get("visual_summary", ""),
-                        "ocr_keywords": parsed.get("ocr_keywords", []),
-                        "frame_count": cluster.get('frame_count', 1),
-                        "cluster_idx": i
-                    })
-                    print(f"Cluster {i+1}/{len(clusters)}: Hero Frame Selected (Index {idx}). Title: {parsed.get('sub_topic_title')}")
-                else:
-                    print(f"Cluster {i+1}: Failed to parse response")
-                    
-            except Exception as e:
-                print(f"Error analyzing cluster {i+1}: {e}")
-                continue
-                
+                        print(f"  Cluster {i+1}/{len(clusters)}: Hero Frame Selected (Index {idx}). Title: {parsed.get('sub_topic_title')}")
+                        return {
+                            "timestamp": hero_frame['timestamp'],
+                            "hero_frame_path": hero_frame['path'],
+                            "sub_topic_title": parsed.get("sub_topic_title", "Visual Topic"),
+                            "visual_summary": parsed.get("visual_summary", ""),
+                            "ocr_keywords": parsed.get("ocr_keywords", []),
+                            "frame_count": cluster.get('frame_count', 1),
+                            "cluster_idx": i
+                        }
+                except Exception as e:
+                    print(f"Error analyzing cluster {i+1}: {e}")
+                return None
+
+        tasks = [analyze_single(i, c) for i, c in enumerate(clusters)]
+        gather_results = await asyncio.gather(*tasks)
+        
+        # Filter Nones and sort by cluster index to preserve order
+        results = [r for r in gather_results if r is not None]
+        results.sort(key=lambda x: x['cluster_idx'])
+            
         return results
+
 
     async def map_visuals_to_topics(
         self,
@@ -945,7 +954,7 @@ Return JSON:
             return self._parse_json_response(response.text)
             
         try:
-            mapped_result = retry_with_backoff(_map_topics, max_retries=2)
+            mapped_result = await asyncio.to_thread(retry_with_backoff, _map_topics, 2)
             
             if mapped_result and "topics" in mapped_result:
                 # Merge logic
@@ -1023,7 +1032,8 @@ Return JSON:
         transcript_analysis: Dict[str, Any],
         frame_analyses: List[Dict[str, Any]],
         duration: float,
-        video_genre: Optional[str] = None
+        video_genre: Optional[str] = None,
+        playlist_context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Synthesize transcript and frame analyses into final output with retry logic
@@ -1053,6 +1063,8 @@ Return JSON:
         
         IMPORTANT: You must preserve ALL topics from the transcript analysis. Do not filter, remove, or skip any topics. 
         All topics should cover the full video duration from 00:00:00 to {seconds_to_timestamp(duration)}.
+
+        {f'{playlist_context}' if playlist_context else ''}
 
         {genre_snippet}
         
@@ -1112,7 +1124,7 @@ Return JSON:
             }
         
         try:
-            return retry_with_backoff(_synthesize, max_retries=2)
+            return await asyncio.to_thread(retry_with_backoff, _synthesize, 2)
         except Exception as e:
             print(f"Error synthesizing results: {e}")
             # Return fallback with ALL original topics from analysis
@@ -1123,6 +1135,112 @@ Return JSON:
                 "entities": transcript_analysis.get("entities", {})
             }
     
+    async def generate_slide_summary(
+        self,
+        transcript_text: str,
+        executive_summary: str,
+        key_takeaways: list,
+        topics: list,
+        duration: float,
+        video_genre: str = None
+    ) -> list:
+        """
+        Generate a 5-slide executive presentation summary using Gemini.
+        
+        Returns:
+            List of 5 slide dicts: [{"title": str, "bullets": [str]}]
+        """
+        # Build a compact context from the report
+        topics_summary = ""
+        for i, t in enumerate(topics[:15]):
+            title = t.get("title", "")
+            summary = t.get("summary", "")
+            topics_summary += f"  Topic {i+1}: {title} — {summary}\n"
+        
+        takeaways_text = "\n".join(f"  - {t}" for t in key_takeaways) if key_takeaways else "  (none)"
+        
+        # Truncate transcript to fit prompt limits
+        transcript_excerpt = transcript_text[:30000] if len(transcript_text) > 30000 else transcript_text
+        
+        prompt = f"""You are an expert executive communication strategist.
+Your task is to convert the provided video transcript and report into a concise 5-slide executive presentation that captures the complete intellectual arc of the video.
+
+The video is a {duration/60:.1f}-minute {video_genre or 'video'}.
+
+Executive Summary: {executive_summary}
+
+Key Takeaways:
+{takeaways_text}
+
+Topics Covered:
+{topics_summary}
+
+Transcript (excerpt):
+{transcript_excerpt}
+
+Follow these rules strictly:
+- Produce exactly 5 slides.
+- Each slide must have a strong slide title (clear and outcome-oriented) and 4–6 bullet points.
+- Each bullet must be 1- 2 lines max.
+- No fluff, no repetition.
+- Avoid generic phrases like "The speaker discusses."
+- Focus on structured thinking and knowledge compression.
+- If technical, simplify without dumbing down.
+- If conceptual, make it structured and concrete.
+- If tutorial-based, capture workflow, logic, and key steps.
+- If business-oriented, highlight strategic implications and decision frameworks.
+
+Structure the slides as follows:
+Slide 1 - Core Thesis & Context: What is the central idea or problem? Why does it matter? Who is it relevant for?
+Slide 2 - Key Concepts / Framework / Architecture: Main building blocks, core mechanisms, important terminology explained simply.
+Slide 3 - Deep Insights / Critical Mechanisms: Non-obvious insights, trade-offs, strategic or technical depth, what differentiates this from basic knowledge.
+Slide 4 - Practical Applications / Implementation: How this can be applied, real-world usage, step-by-step logic if relevant, business or technical execution implications.
+Slide 5 - Strategic Takeaways & Next Moves: Long-term implications, risks or limitations, where this is heading, clear actionable next steps.
+
+Return output in this JSON format:
+{{
+  "slides": [
+    {{
+      "title": "Slide title here",
+      "bullets": [
+        "Bullet point 1",
+        "Bullet point 2",
+        "Bullet point 3",
+        "Bullet point 4"
+      ]
+    }}
+  ]
+}}
+
+Generate exactly 5 slides."""
+
+        def _generate():
+            print("Generating 5-slide executive summary with Gemini...")
+            response = self.text_model.generate_content(prompt)
+            return self._parse_json_response(response.text)
+        
+        try:
+            result = await asyncio.to_thread(retry_with_backoff, _generate, 2)
+            
+            if result and "slides" in result:
+                slides = result["slides"][:5]  # Ensure max 5
+                # Validate structure
+                validated = []
+                for slide in slides:
+                    validated.append({
+                        "title": slide.get("title", f"Slide {len(validated)+1}"),
+                        "bullets": slide.get("bullets", [])[:6]  # Max 6 bullets
+                    })
+                print(f"Generated {len(validated)} slides for executive summary.")
+                return validated
+            else:
+                print("Slide generation returned unexpected format, returning empty.")
+                return []
+                
+        except Exception as e:
+            print(f"Error generating slide summary: {e}")
+            return []
+
     def _parse_json_response(self, text: str) -> Optional[Dict]:
         """Extract and parse JSON from model response with aggressive error recovery"""
         import re
@@ -1176,6 +1294,103 @@ Return JSON:
             print(f"JSON parsing failed: {str(e)}")
             # print(f"Failed JSON text subset: {text[:200]}...")
             return None
+
+
+    async def generate_topic_summary(
+        self,
+        topic_title: str,
+        channel: str,
+        chapter_summaries: list
+    ) -> dict:
+        """
+        Generate a curriculum-level summary for a topic (playlist).
+        
+        Args:
+            topic_title: Playlist title
+            channel: Channel name
+            chapter_summaries: List of dicts with chapter_number, title, executive_summary, key_takeaways
+        
+        Returns:
+            Dict with topic_summary, learning_objectives, prerequisites, difficulty_level,
+            estimated_total_time, chapter_outline
+        """
+        def _generate():
+            chapters_text = ""
+            for ch in chapter_summaries:
+                takeaways = ch.get("key_takeaways", [])[:5]
+                takeaways_str = "\n".join(f"  - {t}" for t in takeaways) if takeaways else "  (none)"
+                chapters_text += f"""
+Chapter {ch.get('chapter_number', '?')}: "{ch.get('title', 'Untitled')}"
+  Duration: {ch.get('duration_minutes', 0):.0f} minutes
+  Summary: {ch.get('executive_summary', 'N/A')[:300]}
+  Key Takeaways:
+{takeaways_str}
+"""
+
+            prompt = f"""You are a curriculum designer analyzing a complete educational video series.
+
+Series: "{topic_title}"
+Channel: {channel}
+Total Chapters: {len(chapter_summaries)}
+
+Here are the chapter summaries:
+{chapters_text}
+
+Analyze this series and produce a structured curriculum overview. Return your analysis as JSON with this exact format:
+{{
+  "topic_summary": "A 2-3 sentence overview of what this entire series teaches, written as a compelling description for a learner deciding whether to study this material",
+  "learning_objectives": [
+    "Specific, measurable learning objective 1",
+    "Specific, measurable learning objective 2",
+    "...(3-6 objectives)"
+  ],
+  "prerequisites": [
+    "Knowledge or skill needed before starting (if any)",
+    "..."
+  ],
+  "difficulty_level": "beginner|intermediate|advanced|mixed",
+  "estimated_total_time": "Total study time as a human-readable string, e.g. '4 hours 30 minutes'",
+  "chapter_outline": [
+    {{
+      "chapter_number": 1,
+      "title": "Chapter title",
+      "one_liner": "One sentence describing what this chapter covers",
+      "depends_on": []
+    }},
+    {{
+      "chapter_number": 2,
+      "title": "Chapter title",
+      "one_liner": "One sentence describing what this chapter covers",
+      "depends_on": [1]
+    }}
+  ]
+}}
+
+Rules:
+- learning_objectives should be specific and actionable (use verbs like "explain", "implement", "compare", "design")
+- prerequisites should be honest — if no prior knowledge is needed, return an empty array
+- difficulty_level should reflect the OVERALL series difficulty
+- chapter_outline.depends_on lists chapter numbers that should be studied BEFORE this chapter (empty array if independent)
+- Keep topic_summary compelling but honest
+
+Return ONLY valid JSON, no markdown fences."""
+
+            response = self.text_model.generate_content(prompt)
+            result = self._parse_json_response(response.text)
+            
+            if not result:
+                return {
+                    "topic_summary": f"A {len(chapter_summaries)}-part video series from {channel}.",
+                    "learning_objectives": [],
+                    "prerequisites": [],
+                    "difficulty_level": "intermediate",
+                    "estimated_total_time": "",
+                    "chapter_outline": []
+                }
+            
+            return result
+
+        return await asyncio.get_event_loop().run_in_executor(None, _generate)
 
 
 # Singleton instance

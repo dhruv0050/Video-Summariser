@@ -63,21 +63,18 @@ class YouTubeService:
     @staticmethod
     def get_video_info(video_id: str) -> dict:
         """Get video metadata without downloading"""
+        proxy_url = os.getenv('PROXY_URL')
+        
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
-            # Use tv_embedded client first (works best on servers without cookies)
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['tv_embedded', 'ios', 'android', 'web']
-                }
-            },
-            # Better headers
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            },
+            'verbose': False,
         }
+        
+        if proxy_url:
+            ydl_opts['proxy'] = proxy_url
+            print(f"✅ Using proxy for metadata extraction")
         
         # Add cookies if configured (use same path resolution as download_video)
         cookies_path = YouTubeService._resolve_cookies_path()
@@ -99,6 +96,62 @@ class YouTubeService:
                 }
             except Exception as e:
                 raise Exception(f"Failed to fetch video info: {str(e)}")
+    
+    @staticmethod
+    def extract_playlist_info(playlist_url: str) -> dict:
+        """Extract all video metadata from a YouTube playlist without downloading.
+        
+        Args:
+            playlist_url: YouTube playlist URL
+            
+        Returns:
+            Dict with playlist title, description, channel, and list of videos
+        """
+        proxy_url = os.getenv('PROXY_URL')
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': 'in_playlist',  # Get metadata only, don't resolve each video
+            'skip_download': True,
+            'verbose': False,
+        }
+        
+        if proxy_url:
+            ydl_opts['proxy'] = proxy_url
+            print(f"✅ Using proxy for playlist extraction")
+        
+        cookies_path = YouTubeService._resolve_cookies_path()
+        if cookies_path:
+            ydl_opts['cookies'] = cookies_path
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(playlist_url, download=False)
+                
+                entries = info.get('entries', [])
+                videos = []
+                for i, entry in enumerate(entries):
+                    if entry is None:
+                        continue
+                    video_id = entry.get('id', '')
+                    videos.append({
+                        'video_url': f"https://www.youtube.com/watch?v={video_id}",
+                        'video_id': video_id,
+                        'video_title': entry.get('title', f'Video {i+1}'),
+                        'duration': entry.get('duration') or 0,
+                        'order': i
+                    })
+                
+                return {
+                    'title': info.get('title', 'Untitled Playlist'),
+                    'description': info.get('description', ''),
+                    'channel': info.get('uploader', info.get('channel', 'Unknown')),
+                    'video_count': len(videos),
+                    'videos': videos
+                }
+            except Exception as e:
+                raise Exception(f"Failed to extract playlist info: {str(e)}")
     
     @staticmethod
     def download_video(
@@ -139,36 +192,26 @@ class YouTubeService:
             'best'
         ]
         
-        # Build yt-dlp options with cookie support
+        proxy_url = os.getenv('PROXY_URL')
+        
         ydl_opts = {
             'format': format_selectors[0],  # Start with best MP4
             'outtmpl': base_output_path + '.%(ext)s',  # yt-dlp will add extension
-            'quiet': False,
-            'no_warnings': False,
+            'quiet': True,
+            'no_warnings': True,
             'progress_hooks': [YouTubeService._progress_hook],
             'no_check_certificate': False,
             'prefer_insecure': False,
-            # Client selection will be updated based on cookie availability
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['hls'],  # Try to skip HLS if possible
-                    'player_client': ['tv_embedded', 'ios', 'android', 'web']  # tv_embedded works best on servers
-                }
-            },
-            # Better headers to mimic real browser
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Sec-Fetch-Mode': 'navigate',
-            },
-            # Retry on fragment errors
+            'verbose': False,
             'fragment_retries': 3,
             'retries': 3,
         }
         
+        if proxy_url:
+            ydl_opts['proxy'] = proxy_url
+            print(f"✅ Using proxy for video download")
+        
         # Add cookies if configured (prioritize cookies file for server environments)
-        # Note: cookies_from_browser won't work on servers like Render (no browser installed)
         cookies_configured = False
         cookies_path = YouTubeService._resolve_cookies_path()
         
@@ -191,10 +234,9 @@ class YouTubeService:
                 print(f"Warning: cookies_from_browser not available: {e}")
                 print("Note: On servers (like Render), use YOUTUBE_COOKIES_PATH with a cookies.txt file instead")
         
-        # If no cookies configured, try tv_embedded client which sometimes bypasses bot detection
+        # If no cookies configured, try mobile clients which sometimes bypass bot detection
         if not cookies_configured:
-            ydl_opts['extractor_args']['youtube']['player_client'] = ['tv_embedded', 'ios', 'android', 'web']
-            print("⚠️ No cookies configured - using tv_embedded client (may still trigger bot detection)")
+            print("⚠️ No cookies configured - using default clients (may still trigger bot detection)")
             print("   Recommendation: Set YOUTUBE_COOKIES_PATH to a valid cookies.txt file")
         else:
             print(f"✅ Cookies configured - using authenticated requests")
@@ -271,11 +313,16 @@ class YouTubeService:
     def _progress_hook(d):
         """Progress hook for yt-dlp download"""
         if d['status'] == 'downloading':
-            percent = d.get('_percent_str', 'N/A')
-            speed = d.get('_speed_str', 'N/A')
-            # Print progress (can be improved with logging)
-            if percent != 'N/A':
-                print(f"Download progress: {percent} at {speed}")
+            p = d.get('downloaded_bytes', 0)
+            t = d.get('total_bytes') or d.get('total_bytes_estimate')
+            if t:
+                percent = int((p / t) * 100)
+                # Only log every 10% and avoid double logging same %
+                last_p = getattr(YouTubeService, '_last_percent', -1)
+                if percent % 10 == 0 and percent != last_p:
+                    YouTubeService._last_percent = percent
+                    speed = d.get('_speed_str', 'N/A')
+                    print(f"Download Progress: {percent}% at {speed}")
         elif d['status'] == 'finished':
             print(f"Download complete: {d['filename']}")
 

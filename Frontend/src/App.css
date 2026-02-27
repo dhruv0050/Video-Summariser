@@ -256,8 +256,143 @@ button:not(:disabled):active {
 	font-size: 13px;
 }
 
+/* ── Auth Header ── */
+.auth-header {
+	position: fixed;
+	top: 0;
+	right: 0;
+	z-index: 100;
+	padding: 16px 24px;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.auth-buttons {
+	display: flex;
+	gap: 10px;
+}
+
+.auth-btn {
+	padding: 8px 18px !important;
+	border-radius: 10px !important;
+	font-size: 13px !important;
+	font-weight: 600 !important;
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.auth-btn-signin {
+	background: rgba(255,255,255,0.08) !important;
+	color: #d8e1ff !important;
+	border: 1px solid rgba(255,255,255,0.15) !important;
+}
+
+.auth-btn-signin:hover {
+	background: rgba(255,255,255,0.14) !important;
+	border-color: rgba(99,102,241,0.5) !important;
+}
+
+.auth-btn-signup {
+	background: linear-gradient(120deg, #6366f1, #22c55e) !important;
+	color: #0b1021 !important;
+	border: none !important;
+}
+
+.auth-btn-signup:hover {
+	filter: brightness(1.1);
+}
+
+.auth-user {
+	display: flex;
+	align-items: center;
+}
+
+/* ── Auth Gate (unauthenticated landing) ── */
+.auth-gate {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	min-height: 80vh;
+	width: 100%;
+	padding: 40px 16px;
+}
+
+.auth-gate-content {
+	text-align: center;
+	max-width: 480px;
+	padding: 48px 40px;
+	background: rgba(255,255,255,0.03);
+	border: 1px solid rgba(255,255,255,0.08);
+	border-radius: 24px;
+	box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+	backdrop-filter: blur(16px);
+}
+
+.auth-gate-icon {
+	font-size: 56px;
+	margin-bottom: 16px;
+}
+
+.auth-gate-content h1 {
+	font-size: 32px;
+	margin: 0 0 12px;
+	background: linear-gradient(120deg, #e0e7ff, #6366f1);
+	-webkit-background-clip: text;
+	-webkit-text-fill-color: transparent;
+	background-clip: text;
+}
+
+.auth-gate-cta {
+	color: #6b7280;
+	font-size: 14px;
+	margin: 24px 0 20px;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	font-weight: 500;
+}
+
+.auth-buttons-large {
+	display: flex;
+	gap: 14px;
+	justify-content: center;
+}
+
+.auth-btn-large {
+	padding: 14px 28px !important;
+	border-radius: 14px !important;
+	font-size: 15px !important;
+	font-weight: 700 !important;
+	cursor: pointer;
+	transition: all 0.2s ease;
+}
+
+.auth-btn-signin-large {
+	background: rgba(255,255,255,0.08) !important;
+	color: #d8e1ff !important;
+	border: 1px solid rgba(255,255,255,0.18) !important;
+}
+
+.auth-btn-signin-large:hover {
+	background: rgba(255,255,255,0.14) !important;
+	border-color: rgba(99,102,241,0.5) !important;
+}
+
+.auth-btn-signup-large {
+	background: linear-gradient(120deg, #6366f1, #22c55e) !important;
+	color: #0b1021 !important;
+	border: none !important;
+}
+
+.auth-btn-signup-large:hover {
+	filter: brightness(1.1);
+	transform: translateY(-1px);
+}
+
 @media (max-width: 720px) {
 	.app-shell { padding: 28px 12px 48px; }
 	.hero { flex-direction: column; align-items: flex-start; }
 	.actions { flex-direction: column; align-items: flex-start; }
+	.auth-buttons-large { flex-direction: column; }
+	.auth-gate-content { padding: 32px 24px; }
 }

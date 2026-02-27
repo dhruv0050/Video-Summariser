@@ -34,6 +34,11 @@ class SubTopic(BaseModel):
     visual_summary: str
     timestamp: str
     image_url: Optional[str] = None
+
+
+class Slide(BaseModel):
+    title: str
+    bullets: List[str] = []
     
     
 class Topic(BaseModel):
@@ -60,15 +65,18 @@ class TranscriptSegment(BaseModel):
 class VideoJobCreate(BaseModel):
     drive_video_url: str
     video_name: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class YouTubeJobCreate(BaseModel):
     youtube_url: str
     video_name: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class UploadJobCreate(BaseModel):
     video_name: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class VideoJob(BaseModel):
@@ -80,6 +88,8 @@ class VideoJob(BaseModel):
     youtube_video_id: Optional[str] = None  # YouTube video ID
     uploaded_video_path: Optional[str] = None  # Path to uploaded video file
     video_name: Optional[str] = None
+    user_id: Optional[str] = None  # Clerk user ID
+    topic_id: Optional[str] = None  # Links to Topic._id if part of a playlist
     status: str = "pending"  # pending, downloading, processing, completed, failed
     progress: float = 0.0
     error_message: Optional[str] = None
@@ -96,11 +106,16 @@ class VideoJob(BaseModel):
     executive_summary: Optional[str] = None
     key_takeaways: List[str] = []
     entities: Dict[str, List[str]] = {}
+    slide_summary: List[Slide] = []  # 5-slide executive presentation
 
     # Content classification (used to adapt prompting)
     video_genre: Optional[str] = None  # e.g. "podcast_panel", "educational_lecture", "vlog", etc.
     genre_confidence: Optional[float] = None
     genre_reason: Optional[str] = None
+    
+    # User-centric logging
+    current_action: str = "" # Latest friendly status message
+    processing_logs: List[Dict[str, Any]] = [] # History of friendly logs
     
     # Report/Synthesis (stored for easy retrieval)
     report: Dict[str, Any] = {}  # Full synthesis result
@@ -125,6 +140,8 @@ class VideoJobResponse(BaseModel):
     status: str
     progress: float
     video_name: Optional[str] = None
+    current_action: str = ""
+    processing_logs: List[Dict[str, Any]] = []
     created_at: datetime
     
     class Config:
@@ -141,6 +158,7 @@ class VideoJobResult(BaseModel):
     frames: List[Frame] = []
     key_takeaways: List[str] = []
     entities: Dict[str, List[str]] = {}
+    slide_summary: List[Slide] = []  # 5-slide executive presentation
     total_frames: int = 0
     processing_cost: Optional[float] = None
     completed_at: Optional[datetime] = None
@@ -157,6 +175,8 @@ class ReportSummary(BaseModel):
     job_id: str
     video_name: Optional[str] = None
     status: str
+    user_id: Optional[str] = None
+    topic_id: Optional[str] = None  # If part of a playlist topic
     duration: Optional[float] = None
     topics_count: int = 0
     created_at: datetime

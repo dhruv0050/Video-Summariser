@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 from datetime import datetime
 from typing import Dict, Any
@@ -8,6 +9,7 @@ from models.database import db
 from models.video_job import VideoJob, TranscriptSegment, Topic, Frame, SubTopic
 from services.drive_service import drive_service
 from services.youtube_service import youtube_service
+from services.playwright_youtube_service import playwright_youtube_service
 from services.gemini_service import gemini_service
 from utils.ffmpeg_utils import FFmpegUtils
 from utils.roi_utils import merge_time_windows
@@ -21,7 +23,7 @@ class ProcessingPipeline:
     def __init__(self):
         self.ffmpeg = FFmpegUtils()
     
-    async def process_video(self, job_id: str):
+    async def process_video(self, job_id: str, playlist_context: str = None):
         """
         Main processing pipeline
         
@@ -52,12 +54,16 @@ class ProcessingPipeline:
             await self._update_job(job_id, {
                 "status": "downloading",
                 "progress": 0.05,
-                "video_source": video_source
+                "video_source": video_source,
+                "message": f"Connecting to {video_source} to download your video..."
             })
             
             # Step 1: Download video based on source
             video_path = await self._download_video(job, video_source)
-            await self._update_job(job_id, {"progress": 0.1})
+            await self._update_job(job_id, {
+                "progress": 0.1,
+                "message": "Video secured! Now preparing for detailed analysis..."
+            })
             
             # Get video metadata
             duration = self.ffmpeg.get_video_duration(video_path)
@@ -66,20 +72,26 @@ class ProcessingPipeline:
             # Step 2: Extract audio
             await self._update_job(job_id, {
                 "status": "extracting",
-                "progress": 0.15
+                "progress": 0.15,
+                "message": "Extracting high-quality audio for transcription..."
             })
             audio_path = await self._extract_audio(video_path, job_id)
-            await self._update_job(job_id, {"progress": 0.25})
+            await self._update_job(job_id, {
+                "progress": 0.25,
+                "message": "Audio ready. Starting AI transcription engine..."
+            })
             
             # Step 3: Transcribe audio
             await self._update_job(job_id, {
                 "status": "transcribing",
-                "progress": 0.3
+                "progress": 0.3,
+                "message": "The AI is transcribing the audio and identifying speakers..."
             })
             transcript = await self._transcribe_audio(audio_path)
             await self._update_job(job_id, {
                 "transcript": [seg.model_dump() for seg in transcript],
-                "progress": 0.5
+                "progress": 0.5,
+                "message": "Transcription complete. Detecting visual cues and landmarks..."
             })
             
             # NEW: Phase 1 - Audio Cue Scout
@@ -91,7 +103,8 @@ class ProcessingPipeline:
             # Step 4: Analyze transcript
             await self._update_job(job_id, {
                 "status": "analyzing",
-                "progress": 0.55
+                "progress": 0.55,
+                "message": "Analyzing the transcript to identify key topics and segments..."
             })
             
             # Build transcript with timestamp context for better analysis
@@ -125,7 +138,8 @@ class ProcessingPipeline:
             transcript_analysis = await gemini_service.analyze_transcript(
                 transcript_text, 
                 duration,
-                video_genre=video_genre
+                video_genre=video_genre,
+                playlist_context=playlist_context
             )
             
             # Filter out ads/sponsorships
@@ -138,22 +152,47 @@ class ProcessingPipeline:
                 print(f"Filtered out {len(original_topics) - len(filtered_topics)} ad/sponsorship topics.")
                 transcript_analysis["topics"] = filtered_topics
                 
-            await self._update_job(job_id, {"progress": 0.6})
+            await self._update_job(job_id, {
+                "progress": 0.6,
+                "message": "Filtering transcript for relevance andremoving distractions..."
+            })
             
             # Step 5: Extract frames
-            await self._update_job(job_id, {"progress": 0.65})
+            await self._update_job(job_id, {
+                "progress": 0.65,
+                "message": "Scanning video frames to identify the most important visual moments..."
+            })
             # Phase 1: Coarse Visual Sampling (every 30s)
             raw_frames = await self._extract_frames(video_path, job_id, transcript_analysis, interval=30)
             
-            # NEW: Phase 1 - Visual Gatekeeper
-            print(f"Running Visual Gatekeeper on {len(raw_frames)} frames...")
+            # NEW: Phase 1 - Visual Gatekeeper (parallel evaluation)
+            print(f"⚡ Running Visual Gatekeeper on {len(raw_frames)} frames in parallel...")
             useful_frames = []
             visual_rois = []
             
-            for i, (frame_path, timestamp) in enumerate(raw_frames):
-                # Analyze frame content
-                evaluation = await gemini_service.evaluate_frame_content(frame_path)
-                
+            # Semaphore to limit concurrent Gemini Vision calls (tuned in config.py)
+            gate_sem = asyncio.Semaphore(config.MAX_CONCURRENT_VISION_TASKS)
+            
+            async def evaluate_single_frame(index, frame_path, timestamp):
+                """Evaluate a single frame with concurrency control"""
+                async with gate_sem:
+                    evaluation = await gemini_service.evaluate_frame_content(frame_path)
+                    return index, frame_path, timestamp, evaluation
+            
+            # Launch all frame evaluations in parallel
+            gate_tasks = [
+                evaluate_single_frame(i, fp, ts)
+                for i, (fp, ts) in enumerate(raw_frames)
+            ]
+            gate_results = await asyncio.gather(*gate_tasks, return_exceptions=True)
+            
+            # Process results in original order
+            for result in sorted(gate_results, key=lambda x: x[0] if not isinstance(x, Exception) else float('inf')):
+                if isinstance(result, Exception):
+                    print(f"  Frame evaluation error: {result}")
+                    continue
+                    
+                i, frame_path, timestamp, evaluation = result
                 is_useful = evaluation.get("is_useful", False)
                 category = evaluation.get("category", "unknown")
                 
@@ -171,6 +210,7 @@ class ProcessingPipeline:
                     print(f"  Frame {i} at {timestamp}s: DROPPED ({category})")
             
             print(f"Gatekeeper: Kept {len(useful_frames)}/{len(raw_frames)} frames")
+
             
             # NEW: Phase 2 - ROI Fusion & Dense Sampling
             print("Merging ROIs for Phase 2 processing...")
@@ -202,7 +242,8 @@ class ProcessingPipeline:
                 "useful_frames_count": len(useful_frames),
                 "processing_windows": processing_windows,
                 "dense_frames_count": len(dense_frames),
-                "progress": 0.7
+                "progress": 0.7,
+                "message": "Visual landmarks detected. Deduplicating and selecting 'hero' frames..."
             })
             
             # Combine useful coarse frames with dense frames
@@ -232,7 +273,8 @@ class ProcessingPipeline:
             await self._update_job(job_id, {
                 "progress": 0.75,
                 "visual_clusters_count": len(clusters),
-                "visual_clusters_preview": [{"start": c["start_time"], "end": c["end_time"], "count": c["frame_count"]} for c in clusters[:10]]
+                "visual_clusters_preview": [{"start": c["start_time"], "end": c["end_time"], "count": c["frame_count"]} for c in clusters[:10]],
+                "message": "Generating visual sub-topics and cross-referencing with audio..."
             })
             
             # Step 2: Hero Frame Selector
@@ -250,62 +292,96 @@ class ProcessingPipeline:
                     folder_name,
                     parent_folder_id=config.DRIVE_FOLDER_ID
                 )
-                await self._update_job(job_id, {"drive_folder_id": folder_id})
+                await self._update_job(job_id, {
+                    "drive_folder_id": folder_id,
+                    "message": "Uploading key visual frames to Google Drive for your report..."
+                })
             except Exception as e:
                 print(f"Error creating Drive folder: {e}")
                 folder_id = config.DRIVE_FOLDER_ID # Fallback
             
             # We map "visual_subtopics" (Phase 3 result) to "frame_analyses" (Phase 1 structure)
-            frame_analyses = []
-            for i, item in enumerate(visual_subtopics):
+            # Upload hero frames in parallel for speed
+            print(f"⚡ Uploading {len(visual_subtopics)} hero frames to Drive in parallel...")
+            upload_sem = asyncio.Semaphore(config.MAX_CONCURRENT_UPLOADS)
+            
+            async def upload_single_frame(index, item):
+                """Upload a single hero frame to Drive with concurrency control"""
                 frame_path = item["hero_frame_path"]
                 timestamp = item["timestamp"]
-                
                 drive_url = None
-                try:
-                    if os.path.exists(frame_path):
-                        # Upload to Drive
-                        uploaded = drive_service.upload_file(
-                            frame_path,
-                            folder_id=folder_id,
-                            file_name=f"hero_{i:02d}_{int(timestamp)}s.jpg"
-                        )
-                        # Use thumbnail link for direct image embedding (webViewLink is an HTML page)
-                        file_id = uploaded.get("id")
-                        drive_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w800"
-                        # Ensure public permission so frontend can view it
-                        # The upload_file method usually handles this if configured, 
-                        # but _set_file_permission inside it might need verification.
-                        # Assuming upload_file handles permission as seen in previous steps.
-                except Exception as e:
-                    print(f"Error uploading frame {frame_path}: {e}")
-
-                frame_analyses.append({
+                
+                async with upload_sem:
+                    try:
+                        if os.path.exists(frame_path):
+                            # Run sync Drive upload in a thread to avoid blocking
+                            uploaded = await asyncio.to_thread(
+                                drive_service.upload_file,
+                                frame_path,
+                                folder_id,
+                                f"hero_{index:02d}_{int(timestamp)}s.jpg"
+                            )
+                            file_id = uploaded.get("id")
+                            drive_url = f"https://drive.google.com/thumbnail?id={file_id}&sz=w800"
+                    except Exception as e:
+                        print(f"Error uploading frame {frame_path}: {e}")
+                
+                return index, {
                     "frame_path": frame_path,
-                    "drive_url": drive_url, # Frontend uses this!
+                    "drive_url": drive_url,
                     "timestamp": timestamp,
                     "description": item["sub_topic_title"],
                     "ocr_text": " ".join(item.get("keywords", [])),
-                    "type": "slide", 
+                    "type": "slide",
                     "insights": item["visual_summary"]
-                })
+                }
+            
+            upload_tasks = [
+                upload_single_frame(i, item)
+                for i, item in enumerate(visual_subtopics)
+            ]
+            upload_results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+            
+            # Collect results in order
+            frame_analyses = []
+            for result in sorted(upload_results, key=lambda x: x[0] if not isinstance(x, Exception) else float('inf')):
+                if isinstance(result, Exception):
+                    print(f"  Upload error: {result}")
+                    continue
+                _, analysis = result
+                frame_analyses.append(analysis)
+
             
             await self._update_job(job_id, {
                 "progress": 0.85,
-                "visual_subtopics": visual_subtopics
+                "visual_subtopics": visual_subtopics,
+                "message": "Almost there! Combining all insights into your final structured report..."
             })
             
             # Step 7: Synthesize results
             await self._update_job(job_id, {
                 "status": "synthesizing",
-                "progress": 0.9
+                "progress": 0.9,
+                "message": "AI is generating your executive summary and key takeaways..."
             })
             synthesis = await gemini_service.synthesize_results(
                 transcript_analysis,
                 frame_analyses,
                 duration,
-                video_genre=video_genre
+                video_genre=video_genre,
+                playlist_context=playlist_context
             )
+            
+            # CRITICAL: Post-synthesis ad cleanup
+            # Sometimes synthesis re-introduces ad topics if they are prominent
+            original_synth_topics = synthesis.get("topics", [])
+            clean_synth_topics = [
+                t for t in original_synth_topics 
+                if "sponsor" not in t.get("title", "").lower() and t.get("type", "content") != "ad"
+            ]
+            if len(clean_synth_topics) < len(original_synth_topics):
+                 print(f"Filtered {len(original_synth_topics) - len(clean_synth_topics)} ad topics from synthesis result.")
+                 synthesis["topics"] = clean_synth_topics
             
             # Step 7.1: Map Visuals to Topics (Phase 4)
             print("Mapping visual sub-topics to synthesized main topics...")
@@ -314,6 +390,26 @@ class ProcessingPipeline:
             
             # Update synthesis with mapped topics
             synthesis["topics"] = mapped_topics
+            
+            # Step 7.2: Generate 5-Slide Executive Summary
+            print("Generating 5-slide executive summary...")
+            slide_summary = []
+            try:
+                await self._update_job(job_id, {
+                    "progress": 0.95,
+                    "message": "Generating a 5-slide executive presentation for you..."
+                })
+                slide_summary = await gemini_service.generate_slide_summary(
+                    transcript_text=transcript_text,
+                    executive_summary=synthesis.get("executive_summary", ""),
+                    key_takeaways=synthesis.get("key_takeaways", []),
+                    topics=synthesis.get("topics", []),
+                    duration=duration,
+                    video_genre=video_genre
+                )
+                print(f"Generated {len(slide_summary)} slides.")
+            except Exception as e:
+                print(f"Slide summary generation failed (non-blocking): {e}")
             
             # Step 8: Build final output
             topics = await self._build_topics(
@@ -335,10 +431,12 @@ class ProcessingPipeline:
                 "executive_summary": synthesis.get("executive_summary", ""),
                 "key_takeaways": synthesis.get("key_takeaways", []),
                 "entities": synthesis.get("entities", {}),
+                "slide_summary": slide_summary,
                 "report": synthesis,  # Store full synthesis result
                 "video_genre": video_genre,
                 "genre_confidence": genre_confidence,
-                "completed_at": datetime.utcnow()
+                "completed_at": datetime.utcnow(),
+                "message": "Report complete! Rendering your insights now."
             })
             
             # Cleanup temp files
@@ -398,8 +496,18 @@ class ProcessingPipeline:
                 "video_source": "youtube"
             })
             
-            # Download video
-            youtube_service.download_video(youtube_url, video_path, video_id)
+            # Download video using yt-dlp + PO Token server (most reliable on Render)
+            try:
+                print(f"Downloading YouTube video {video_id} using yt-dlp strategy...")
+                youtube_service.download_video(youtube_url, video_path, video_id)
+            except Exception as e:
+                print(f"yt-dlp download failed: {e}")
+                print("Falling back to Playwright (may fail on Render)...")
+                try:
+                    await playwright_youtube_service.download_video(youtube_url, video_path)
+                except Exception as pe:
+                    print(f"Playwright fallback also failed: {pe}")
+                    raise Exception(f"Failed to download YouTube video: {e}")
             
         else:
             # Download from Google Drive (existing logic)
@@ -438,25 +546,57 @@ class ProcessingPipeline:
         return audio_path
     
     async def _transcribe_audio(self, audio_path: str) -> list[TranscriptSegment]:
-        """Transcribe audio in chunks"""
+        """Transcribe audio in chunks — runs chunks in parallel for speed"""
         # Split audio into chunks
         chunks = self.ffmpeg.split_audio(audio_path)
         
-        all_segments = []
+        # Semaphore to limit concurrent Gemini API calls (tuned in config.py)
+        sem = asyncio.Semaphore(config.MAX_CONCURRENT_TRANSCRIBES)
         
-        for chunk_path, start_time, end_time in chunks:
+        async def transcribe_chunk(chunk_path, start_time):
+            """Transcribe a single chunk with concurrency control"""
+            async with sem:
+                try:
+                    segments = await gemini_service.transcribe_audio(
+                        chunk_path, 
+                        start_time
+                    )
+                    return segments
+                except Exception as e:
+                    print(f"Error transcribing chunk {chunk_path}: {e}")
+                    return []
+        
+        # Launch all chunks in parallel
+        print(f"⚡ Transcribing {len(chunks)} audio chunks in parallel...")
+        tasks = [
+            transcribe_chunk(chunk_path, start_time)
+            for chunk_path, start_time, end_time in chunks
+        ]
+        results = await asyncio.gather(*tasks)
+        
+        # Flatten results (maintain order since asyncio.gather preserves input order)
+        all_segments = []
+        for segments in results:
+            all_segments.extend(segments)
+        
+        # Clean up all chunk files after parallel processing is done
+        for chunk_path, _, _ in chunks:
             try:
-                segments = await gemini_service.transcribe_audio(
-                    chunk_path, 
-                    start_time
-                )
-                all_segments.extend(segments)
-            except Exception as e:
-                print(f"Error transcribing chunk {chunk_path}: {e}")
-            finally:
-                # Clean up chunk file
                 if os.path.exists(chunk_path):
-                    os.remove(chunk_path)
+                    import gc
+                    gc.collect()
+                    for attempt in range(5):
+                        try:
+                            time.sleep(0.3)
+                            os.remove(chunk_path)
+                            break
+                        except (PermissionError, OSError):
+                            if attempt < 4:
+                                time.sleep(0.5)
+                            else:
+                                print(f"Warning: Could not delete {chunk_path} after retries, skipping")
+            except Exception as cleanup_err:
+                print(f"Warning: Chunk cleanup error (non-fatal): {cleanup_err}")
         
         # Deduplicate overlapping segments
         deduplicated = self._deduplicate_segments(all_segments)
@@ -633,6 +773,7 @@ class ProcessingPipeline:
                 # Find matching frame URL if not present
                 img_url = sub.get("image_url")
                 sub_ts = sub.get("frame_timestamp")
+                matched_fa = None
                 
                 if not img_url and sub_ts is not None:
                     # Find closest frame in frame_analyses
@@ -648,13 +789,40 @@ class ProcessingPipeline:
                     
                     if closest_frame:
                          img_url = closest_frame.get("drive_url")
+                         matched_fa = closest_frame
+                elif img_url:
+                    # Find the fa for this img_url to add to frames later
+                    for fa in frame_analyses:
+                        if fa.get("drive_url") == img_url:
+                            matched_fa = fa
+                            break
                 
+                # Add to sub_topics list
                 sub_topics_instances.append(SubTopic(
                     title=sub.get("title", "Visual Topic"),
                     visual_summary=sub.get("visual_summary", ""),
                     timestamp=sub.get("timestamp", "00:00:00"),
                     image_url=img_url
                 ))
+
+                # ALSO: Ensure this frame is in the main topic_frames list for Topic Covered section
+                if matched_fa:
+                    # Check if already present to avoid duplicates
+                    exists = False
+                    for existing in topic_frames:
+                        if existing.drive_url == matched_fa.get("drive_url"):
+                            exists = True
+                            break
+                    
+                    if not exists:
+                        topic_frames.append(Frame(
+                            timestamp=seconds_to_timestamp(matched_fa.get("timestamp", 0)),
+                            frame_number=len(topic_frames),
+                            drive_url=matched_fa.get("drive_url"),
+                            description=matched_fa.get("description") or matched_fa.get("insights"),
+                            ocr_text=matched_fa.get("ocr_text"),
+                            type=matched_fa.get("type", "slide")
+                        ))
 
             topic = Topic(
                 title=topic_info.get("title", "Untitled"),
@@ -718,8 +886,24 @@ class ProcessingPipeline:
         return job
     
     async def _update_job(self, job_id: str, updates: Dict):
-        """Update job in database"""
+        """Update job in database with real-time logging support"""
         database = db.get_db()
+        
+        # If a message is provided, add it to processing_logs and set as current_action
+        if "message" in updates:
+            msg = updates.pop("message")
+            log_entry = {
+                "message": msg,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            await database.video_jobs.update_one(
+                {"_id": ObjectId(job_id)},
+                {
+                    "$push": {"processing_logs": log_entry},
+                    "$set": {"current_action": msg}
+                }
+            )
+            
         updates["updated_at"] = datetime.utcnow()
         await database.video_jobs.update_one(
             {"_id": ObjectId(job_id)},

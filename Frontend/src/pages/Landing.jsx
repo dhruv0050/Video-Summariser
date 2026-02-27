@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useUser } from '@clerk/clerk-react';
 import VideoChatBot from '../components/VideoChatBot';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -7,6 +8,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 const Landing = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { user } = useUser();
   const [videoUrl, setVideoUrl] = useState('');
   const [videoName, setVideoName] = useState('');
   const [jobId, setJobId] = useState('');
@@ -18,13 +20,17 @@ const Landing = () => {
   const [viewingPastReport, setViewingPastReport] = useState(false);
   const [videoSource, setVideoSource] = useState('auto'); // 'auto', 'drive', 'youtube', 'upload'
   const [uploadedFile, setUploadedFile] = useState(null);
+  const [currentAction, setCurrentAction] = useState('');
+  const [logs, setLogs] = useState([]);
 
   // Detect video source from URL
   const detectVideoSource = (url) => {
     if (!url) return 'auto';
     const youtubePattern = /(?:youtube\.com|youtu\.be)/;
     const drivePattern = /drive\.google\.com/;
+    const playlistPattern = /[?&]list=/;
 
+    if (youtubePattern.test(url) && playlistPattern.test(url)) return 'playlist';
     if (youtubePattern.test(url)) return 'youtube';
     if (drivePattern.test(url)) return 'drive';
     return 'auto';
@@ -50,7 +56,7 @@ const Landing = () => {
   useEffect(() => {
     let interval;
     if (jobId && polling && !viewingPastReport) {
-      interval = setInterval(() => pollStatus(jobId), 5000);
+      interval = setInterval(() => pollStatus(jobId), 8000);
       pollStatus(jobId); // immediate poll
     }
     return () => {
@@ -66,6 +72,32 @@ const Landing = () => {
     setProgress(0);
     setJobId('');
 
+    // Handle playlist submission
+    if (videoSource === 'playlist') {
+      try {
+        const resp = await fetch(`${API_BASE}/api/topics/process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            playlist_url: videoUrl,
+            user_id: user?.id || null
+          })
+        });
+        if (!resp.ok) {
+          const errData = await resp.json();
+          throw new Error(errData.detail || 'Failed to process playlist');
+        }
+        const data = await resp.json();
+        // Navigate to the new topic's detail page
+        navigate(`/topics/${data.topic_id}`);
+        return;
+      } catch (err) {
+        setError(err.message || 'Failed to process playlist');
+        setStatus('idle');
+        return;
+      }
+    }
+
     // Handle file upload
     if (videoSource === 'upload' || uploadedFile) {
       if (!uploadedFile) {
@@ -79,6 +111,9 @@ const Landing = () => {
         formData.append('file', uploadedFile);
         if (videoName.trim()) {
           formData.append('video_name', videoName.trim());
+        }
+        if (user?.id) {
+          formData.append('user_id', user.id);
         }
 
         const resp = await fetch(`${API_BASE}/api/videos/process-upload`, {
@@ -125,12 +160,14 @@ const Landing = () => {
         payload = {
           youtube_url: url,
           video_name: videoName.trim() || 'Untitled Video',
+          user_id: user?.id || null,
         };
       } else {
         endpoint = `${API_BASE}/api/videos/process`;
         payload = {
           drive_video_url: url,
           video_name: videoName.trim() || 'Untitled Video',
+          user_id: user?.id || null,
         };
       }
 
@@ -163,6 +200,8 @@ const Landing = () => {
       const data = await resp.json();
       setStatus(data.status);
       setProgress(data.progress || 0);
+      setCurrentAction(data.current_action || '');
+      setLogs(data.processing_logs || []);
 
       if (data.status === 'completed') {
         setPolling(false);
@@ -215,7 +254,7 @@ const Landing = () => {
         text.includes('advertisement') ||
         text.includes('promotional message') ||
         text.includes('paid promotion') ||
-        (text.includes('sponsor') && text.includes('message'));
+        text.includes('sponsor'); // Aggressive check for any mention of sponsor
 
       if (isAd) console.log("Blocked ad:", topic.title);
       return !isAd;
@@ -224,7 +263,7 @@ const Landing = () => {
     return contentTopics.map((topic, idx) => (
       <div className="card" key={`${topic.title}-${idx}`}>
         <div className="card-header">
-          <div className="pill">Topic {idx + 1} (v1.1)</div>
+          <div className="pill">Topic {idx + 1}</div>
           <div className="timestamp">{topic.timestamp_range?.join(' — ')}</div>
         </div>
         <h3>{topic.title}</h3>
@@ -240,62 +279,70 @@ const Landing = () => {
         {/* Phase 4: Visual Sub-topics (Priority) */}
         {topic.sub_topics?.length > 0 ? (
           <div className="frames-grid">
-            {topic.sub_topics.map((sub, i) => (
-              <a
-                className="frame-thumb"
-                href={sub.image_url}
-                target="_blank"
-                rel="noreferrer"
-                key={i}
-                style={{
-                  textDecoration: 'none',
-                  padding: 0,
-                  overflow: 'hidden',
-                  display: 'flex',
-                  flexDirection: 'column'
-                }}
-              >
-                {/* Thumbnail Image */}
-                {sub.image_url ? (
-                  <div style={{
-                    width: '100%',
-                    height: '120px',
-                    backgroundImage: `url(${sub.image_url})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: 'center',
-                    borderBottom: '1px solid rgba(255,255,255,0.06)'
-                  }} />
-                ) : (
-                  <div style={{
-                    height: '120px',
-                    background: 'linear-gradient(45deg, #1f2937, #111827)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: '#374151',
-                    fontSize: '24px'
-                  }}>
-                    🖼️
-                  </div>
-                )}
+            {topic.sub_topics.map((sub, i) => {
+              // DEBUG: Check why image might be missing
+              if (!sub.image_url) console.log(`Missing image for subtopic: ${sub.title} at ${sub.timestamp}`, sub);
 
-                <div style={{ padding: '12px', flex: 1, display: 'flex', flexDirection: 'column' }}>
-                  <div className="frame-meta" style={{ marginBottom: '6px' }}>
-                    <span className="pill pill-ghost" style={{ fontSize: '10px', padding: '2px 8px' }}>
-                      {sub.timestamp}
-                    </span>
-                  </div>
-                  <div className="frame-desc" style={{ padding: 0, marginTop: 0, fontSize: '13px', lineHeight: '1.4' }}>
-                    {sub.title}
-                  </div>
-                  {sub.visual_summary && (
-                    <div style={{ marginTop: '6px', fontSize: '11px', color: '#9ca3af', lineHeight: '1.3' }}>
-                      {sub.visual_summary.length > 80 ? sub.visual_summary.substring(0, 80) + '...' : sub.visual_summary}
+              return (
+                <a
+                  className="frame-thumb"
+                  href={sub.image_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  key={i}
+                  style={{
+                    textDecoration: 'none',
+                    padding: 0,
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column'
+                  }}
+                >
+                  {/* Thumbnail Image */}
+                  {sub.image_url ? (
+                    <div style={{
+                      width: '100%',
+                      height: '120px',
+                      backgroundImage: `url(${sub.image_url})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      borderBottom: '1px solid rgba(255,255,255,0.06)'
+                    }} />
+                  ) : (
+                    <div style={{
+                      height: '120px',
+                      background: 'rgba(255,255,255,0.05)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#9ca3af',
+                      gap: '5px',
+                      borderBottom: '1px solid rgba(255,255,255,0.06)'
+                    }}>
+                      <span style={{ fontSize: '20px' }}>🖼️</span>
+                      <span style={{ fontSize: '10px' }}>No Preview</span>
                     </div>
                   )}
-                </div>
-              </a>
-            ))}
+
+                  <div style={{ padding: '12px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                    <div className="frame-meta" style={{ marginBottom: '6px' }}>
+                      <span className="pill pill-ghost" style={{ fontSize: '10px', padding: '2px 8px' }}>
+                        {sub.timestamp}
+                      </span>
+                    </div>
+                    <div className="frame-desc" style={{ padding: 0, marginTop: 0, fontSize: '13px', lineHeight: '1.4' }}>
+                      {sub.title}
+                    </div>
+                    {sub.visual_summary && (
+                      <div style={{ marginTop: '6px', fontSize: '11px', color: '#9ca3af', lineHeight: '1.3' }}>
+                        {sub.visual_summary.length > 80 ? sub.visual_summary.substring(0, 80) + '...' : sub.visual_summary}
+                      </div>
+                    )}
+                  </div>
+                </a>
+              );
+            })}
           </div>
         ) : (
           /* Fallback to legacy frames */
@@ -386,6 +433,28 @@ const Landing = () => {
           >
             📊 Past Reports
           </button>
+          <button
+            onClick={() => navigate('/topics')}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: 'rgba(255,255,255,0.1)',
+              color: 'white',
+              border: '1px solid rgba(255,255,255,0.2)',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '14px',
+              fontWeight: '500',
+              transition: 'all 0.2s ease'
+            }}
+            onMouseOver={(e) => {
+              e.target.style.backgroundColor = 'rgba(255,255,255,0.15)';
+            }}
+            onMouseOut={(e) => {
+              e.target.style.backgroundColor = 'rgba(255,255,255,0.1)';
+            }}
+          >
+            📚 Topics
+          </button>
           <div className="status-chip">
             <span className={`dot dot-${status === 'completed' ? 'green' : status === 'failed' ? 'red' : 'amber'}`} />
             <span>{status === 'idle' || viewingPastReport ? 'Completed' : status}</span>
@@ -423,6 +492,7 @@ const Landing = () => {
               <option value="upload">Upload Video File</option>
               <option value="drive">Google Drive</option>
               <option value="youtube">YouTube</option>
+              <option value="playlist">YouTube Playlist</option>
             </select>
           </div>
 
@@ -464,7 +534,9 @@ const Landing = () => {
               <label>Video URL (Google Drive or YouTube)</label>
               <input
                 type="url"
-                placeholder="https://drive.google.com/file/d/FILE_ID/view or https://youtube.com/watch?v=VIDEO_ID"
+                placeholder={videoSource === 'playlist'
+                  ? 'https://www.youtube.com/playlist?list=PLxxxxxx'
+                  : 'https://drive.google.com/file/d/FILE_ID/view or https://youtube.com/watch?v=VIDEO_ID'}
                 value={videoUrl}
                 onChange={(e) => {
                   setVideoUrl(e.target.value);
@@ -476,6 +548,7 @@ const Landing = () => {
                 required={videoSource !== 'upload'}
               />
               <div style={{ marginTop: '8px', fontSize: '12px', color: '#9ca3af' }}>
+                {videoUrl && detectVideoSource(videoUrl) === 'playlist' && '✓ YouTube Playlist detected'}
                 {videoUrl && detectVideoSource(videoUrl) === 'youtube' && '✓ YouTube URL detected'}
                 {videoUrl && detectVideoSource(videoUrl) === 'drive' && '✓ Google Drive URL detected'}
                 {videoUrl && detectVideoSource(videoUrl) === 'auto' && videoSource !== 'upload' && '⚠️ Please enter a valid Drive or YouTube URL'}
@@ -502,7 +575,7 @@ const Landing = () => {
                 polling
               }
             >
-              {status === 'pending' || polling ? 'Processing…' : 'Start Processing'}
+              {status === 'pending' || polling ? 'Processing…' : videoSource === 'playlist' ? '📚 Process Playlist' : 'Start Processing'}
             </button>
             {jobId && !viewingPastReport && <span className="muted">Job ID: {jobId}</span>}
           </div>
@@ -510,9 +583,60 @@ const Landing = () => {
           {error && <div className="error">{error}</div>}
 
           {(status !== 'idle' && status !== 'failed') && (
-            <div className="progress">
-              <div className="progress-bar" style={{ width: `${Math.round(progress * 100)}%` }} />
-              <div className="progress-label">{Math.round(progress * 100)}%</div>
+            <div style={{ marginTop: '20px' }}>
+              <div className="progress">
+                <div className="progress-bar" style={{ width: `${Math.round(progress * 100)}%` }} />
+                <div className="progress-label">{Math.round(progress * 100)}%</div>
+              </div>
+              
+              {/* User-Centric Processing Logs */}
+              <div style={{ 
+                marginTop: '15px', 
+                padding: '15px', 
+                backgroundColor: 'rgba(255,255,255,0.03)', 
+                borderRadius: '10px',
+                border: '1px solid rgba(255,255,255,0.05)'
+              }}>
+                <div style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  gap: '10px', 
+                  marginBottom: '10px' 
+                }}>
+                  <div className="loading-spinner-small" style={{ 
+                    width: '12px', 
+                    height: '12px', 
+                    border: '2px solid rgba(59,130,246,0.3)', 
+                    borderTopColor: '#3b82f6', 
+                    borderRadius: '50%',
+                    animation: 'spin 1s linear infinite'
+                  }} />
+                  <span style={{ fontSize: '14px', fontWeight: '500', color: '#e0e7ff' }}>
+                    {currentAction || 'Initializing AI pipeline...'}
+                  </span>
+                </div>
+                
+                {logs.length > 0 && (
+                  <div style={{ 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    gap: '6px',
+                    opacity: 0.7 
+                  }}>
+                    {logs.slice(-3).reverse().map((log, i) => (
+                      <div key={i} style={{ 
+                        fontSize: '12px', 
+                        color: '#9ca3af',
+                        display: 'flex',
+                        gap: '8px'
+                      }}>
+                        <span style={{ color: '#3b82f6' }}>•</span>
+                        <span>{log.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </form>
@@ -562,6 +686,118 @@ const Landing = () => {
                 </ul>
               </div>
             )}
+
+            {/* 5-Slide Executive Summary */}
+            {result.slide_summary?.length > 0 && (
+              <div style={{ marginTop: '24px' }}>
+                <h4 style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span>📊 5-Slide Summary</span>
+                  <span style={{
+                    fontSize: '11px',
+                    padding: '3px 10px',
+                    borderRadius: '999px',
+                    background: 'rgba(99,102,241,0.15)',
+                    color: '#a5b4fc',
+                    fontWeight: '500',
+                    border: '1px solid rgba(99,102,241,0.3)'
+                  }}>
+                    {result.slide_summary.length} slides
+                  </span>
+                </h4>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
+                  gap: '14px',
+                }}>
+                  {result.slide_summary.map((slide, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        background: 'rgba(255,255,255,0.03)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: '14px',
+                        padding: '18px',
+                        transition: 'border-color 0.2s ease, transform 0.2s ease',
+                        cursor: 'default',
+                      }}
+                      onMouseOver={(e) => {
+                        e.currentTarget.style.borderColor = 'rgba(99,102,241,0.4)';
+                        e.currentTarget.style.transform = 'translateY(-2px)';
+                      }}
+                      onMouseOut={(e) => {
+                        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
+                        e.currentTarget.style.transform = 'translateY(0)';
+                      }}
+                    >
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '10px',
+                        marginBottom: '12px'
+                      }}>
+                        <span style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          width: '28px',
+                          height: '28px',
+                          borderRadius: '8px',
+                          background: 'linear-gradient(135deg, rgba(99,102,241,0.3), rgba(34,197,94,0.3))',
+                          color: '#e0e7ff',
+                          fontSize: '13px',
+                          fontWeight: '700',
+                          border: '1px solid rgba(99,102,241,0.3)',
+                          flexShrink: 0
+                        }}>
+                          {idx + 1}
+                        </span>
+                        <span style={{
+                          fontSize: '14px',
+                          fontWeight: '700',
+                          color: '#e0e7ff',
+                          lineHeight: '1.3'
+                        }}>
+                          {slide.title}
+                        </span>
+                      </div>
+                      <ul style={{
+                        margin: 0,
+                        paddingLeft: '16px',
+                        listStyle: 'none',
+                      }}>
+                        {slide.bullets?.map((bullet, bIdx) => (
+                          <li
+                            key={bIdx}
+                            style={{
+                              fontSize: '13px',
+                              color: '#c3c9e6',
+                              lineHeight: '1.5',
+                              marginBottom: '6px',
+                              position: 'relative',
+                              paddingLeft: '14px',
+                            }}
+                          >
+                            <span style={{
+                              position: 'absolute',
+                              left: 0,
+                              top: '6px',
+                              width: '5px',
+                              height: '5px',
+                              borderRadius: '50%',
+                              background: 'rgba(99,102,241,0.6)',
+                            }} />
+                            <span dangerouslySetInnerHTML={{
+                              __html: bullet.replace(/\*\*(.*?)\*\*/g, '<strong style="color:#e0e7ff;font-weight:600">$1</strong>')
+                            }} />
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {result.entities && (
               <div className="chips">
                 {Object.entries(result.entities).flatMap(([type, items]) =>
